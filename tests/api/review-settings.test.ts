@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { Auth } from "@inkspect/core/lib/github";
+import { reviewSettings } from "../../src/review-settings";
+test('automatic review settings require workspace membership, owner/admin, same origin and a boolean', async () => {
+  let role = 'member', signedIn = true, enabled = true, autoFix = false, saves = 0;
+  const auth = { options: { baseURL: 'http://localhost:3002' }, api: { getSession: async () => signedIn ? { user: { id: 'user' }, session: { activeOrganizationId: 'org' } } : null }, $context: Promise.resolve({ adapter: { findOne: async () => role ? { role } : null } }) } as unknown as Auth;
+  const services = { automaticFix: async () => ({auto_fix:autoFix}), saveAutomaticFix: async (_org:string,_user:string,value:boolean) => { autoFix=value; }, automaticReviews: async () => enabled, saveAutomaticReviews: async (org: string, user: string, value: boolean) => { assert.equal(org, 'org'); assert.equal(user, 'user'); saves++; enabled = value; } };
+  const request = (method = 'GET', value: unknown = false, origin = 'http://localhost:3002', org = 'org') => new Request(`http://localhost:3002/api/review-settings?organizationId=${org}`, { method, headers: { origin, 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify({ automatic: value }) } : {}) });
+  assert.equal((await (await reviewSettings(request(), auth, services)).json()).automatic, true);
+  assert.equal((await reviewSettings(request('POST'), auth, services)).status, 403);
+  role = 'owner';
+  assert.equal((await reviewSettings(request('POST', false, 'https://evil.invalid'), auth, services)).status, 403);
+  assert.equal((await reviewSettings(request('POST', false, undefined, 'other'), auth, services)).status, 409);
+  assert.equal((await reviewSettings(request('POST', 'false'), auth, services)).status, 400);
+  assert.equal(saves, 0);
+  assert.equal((await reviewSettings(request('POST'), auth, services)).status, 200); assert.equal(enabled, false);
+  const fixRequest=(value:unknown,origin='http://localhost:3002')=>new Request('http://localhost:3002/api/review-settings?organizationId=org',{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify({auto_fix:value})});
+  assert.equal((await (await reviewSettings(request(),auth,services)).json()).auto_fix,false);
+  assert.equal((await reviewSettings(fixRequest('true'),auth,services)).status,400);
+  role='member'; assert.equal((await reviewSettings(fixRequest(true),auth,services)).status,403);
+  role='owner'; assert.equal((await reviewSettings(fixRequest(true,'https://evil.invalid'),auth,services)).status,403);
+  assert.equal((await reviewSettings(fixRequest(true),auth,services)).status,200); assert.equal(autoFix,true); assert.equal(enabled,false);
+  assert.equal((await reviewSettings(fixRequest(false),auth,services)).status,200); assert.equal(autoFix,false);
+  signedIn = false; assert.equal((await reviewSettings(request(), auth, services)).status, 401);
+});

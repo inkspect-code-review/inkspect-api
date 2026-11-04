@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { Pool } from "pg";
+import { pools } from "../../src/database";
+import { readFindingLifecycle, setManualFindingResolution } from "@inkspect/core/lib/finding-status-store";
+import { readRepositoryFindings } from "@inkspect/core/lib/findings-store";
+import { parseFindingsQuery, type FindingsTarget } from "@inkspect/core/lib/findings";
+
+test("finding lifecycle and manual resolutions survive pagination and GitHub removal while retaining scope", { skip: !process.env.INKSPECT_DEPLOY_TEST_DATABASE_URL }, async () => {
+  const schema = `finding_states_${randomUUID().replaceAll("-", "")}`;
+  const pool = new Pool({ connectionString: process.env.INKSPECT_DEPLOY_TEST_DATABASE_URL, options: `-c search_path=${schema}`, max: 3 });
+  pools.set("app", pool);
+  const target: FindingsTarget = { repositoryId: 17, repository: "team/repo", claims: { tenant: "org", subject: "member", connection: "connection", installation: 44, repository: 17 } };
+  const id = (n: number) => `J-${n.toString(16).padStart(32, "0")}`;
+  const head = "a".repeat(40), base = "b".repeat(40), commit = "c".repeat(40);
+  const report = (n: number, findings = [{ id: "F-one", severity: "P0", title: "Boundary error", location: { path: "src/a.ts", start_line: 1 } }]) => ({ run: { id: id(n), target: { tenant_id: "org", repository_id: "17" }, coverage_complete: true }, findings, verification_gaps: [] });
+  const query = (status = "all", cursor?: string) => parseFindingsQuery(new URLSearchParams({ status, ...(cursor ? { cursor } : {}) }));
+  try {
+    await pool.query(`CREATE SCHEMA "${schema}"`);
+    await pool.query(`CREATE TABLE member("organizationId" text,"userId" text);
+      CREATE TABLE "githubConnection"(id text,"organizationId" text,"installationId" text,repositories jsonb);
+      CREATE TABLE "githubRepositoryClaim"("organizationId" text,"repositoryId" text);
+      CREATE TABLE api_repository_worker(organization_id text,repository_id text,connection_id text,installation_id bigint,full_name text,queue_database text,queue_schema text,access_error text);
+      CREATE TABLE api_engine_job(id text PRIMARY KEY,organization_id text,repository_id text,connection_id text,installation_id bigint,status text,created_at timestamptz,request jsonb,snapshot jsonb,report jsonb);
+      INSERT INTO member VALUES('org','member');
+      INSERT INTO "githubConnection" VALUES('connection','org','44','[]');
+      INSERT INTO "githubRepositoryClaim" VALUES('org','17');
+      INSERT INTO api_repository_worker VALUES('org','17','connection',44,'team/repo','app','${schema}','revoked');`);
+    const migration = await readFile(new URL(import.meta.resolve("@inkspect/api/migrations/007_finding_resolutions.sql")), "utf8");
+    await pool.query(migration); await pool.query(migration);
+    for (let n = 1; n <= 60; n++) await pool.query("INSERT INTO api_engine_job VALUES($1,'org','17','connection',44,'completed',$2,'{}',$3,$4)", [id(n), new Date(Date.UTC(2026, 9, 30, 0, n)), { url: "https://github.com/team/repo/pull/3", head, base_tip: base }, report(n)]);
+    assert.equal((await readFindingLifecycle(target)).summary.open, 1, "only the latest review's finding is current");
+    assert.equal((await readRepositoryFindings(target, query("open"))).total, 1);
+    await setManualFindingResolution(target, { jobId: id(60), ordinal: 1, findingId: "F-one", resolved: true });
+    assert.equal((await readFindingLifecycle(target)).summary.open, 0);
+    assert.equal((await readFindingLifecycle(target)).summary.severities.critical, 0);
+    await setManualFindingResolution(target, { jobId: id(60), ordinal: 1, findingId: "F-one", resolved: false });
+    assert.equal((await readFindingLifecycle(target)).summary.open, 1);
+    const latest = { url: "https://github.com/team/repo/pull/3", head: commit, base_tip: base };
+    await pool.query("INSERT INTO api_engine_job VALUES($1,'org','17','connection',44,'completed','2026-10-30T02:00:00Z',$2,$3,NULL)", [id(100), { fix_of: id(60) }, { ...latest, head, fix_commit: commit, fix_verification: { version: 3, status: "passed", attempts: 1, findings: 1, candidate_sha256: "a".repeat(64) } }]);
+    await pool.query("INSERT INTO api_engine_job VALUES($1,'org','17','connection',44,'completed','2026-10-30T03:00:00Z','{}',$2,$3)", [id(101), latest, report(101, [])]);
+    let lifecycle = await readFindingLifecycle(target);
+    assert.equal(lifecycle.summary.open, 0); assert.equal(lifecycle.summary.verifiedResolved, 1); assert.equal(lifecycle.summary.notDetected, 59);
+    assert.equal((await readRepositoryFindings(target, query("open"))).total, 0);
+    assert.equal((await readRepositoryFindings(target, query("resolved"))).findings[0].jobId, id(60));
+    let cursor: string | undefined, count = 0;
+    do {
+      const page = await readRepositoryFindings(target, query("not_detected", cursor));
+      assert.equal(page.total, 59); assert.ok(page.findings.length <= 26);
+      const rows = page.findings.slice(0, 25); count += rows.length;
+      const last = rows.at(-1)!;
+      cursor = page.findings.length > 25 ? Buffer.from(JSON.stringify({ ...query(), createdAt: last.createdAt, jobId: last.jobId, ordinal: last.ordinal, repositoryId: last.repositoryId, severity: last.severity })).toString("base64url") : undefined;
+    } while (cursor);
+    assert.equal(count, 59, "status filtering is applied before pagination");
+    const input = { jobId: id(1), ordinal: 1, findingId: "F-one", resolved: true };
+    const original = (await pool.query("SELECT report FROM api_engine_job WHERE id=$1", [id(1)])).rows[0].report;
+    assert.equal((await setManualFindingResolution(target, input))?.source, "manual");
+    lifecycle = await readFindingLifecycle(target);
+    assert.equal(lifecycle.summary.manualResolved, 1); assert.equal(lifecycle.summary.resolved, 2);
+    assert.equal((await readRepositoryFindings(target, query("resolved"))).total, 2);
+    assert.deepEqual((await pool.query("SELECT report FROM api_engine_job WHERE id=$1", [id(1)])).rows[0].report, original);
+    assert.equal((await setManualFindingResolution(target, { ...input, resolved: false }))?.status, "not_detected");
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM api_finding_resolution")).rows[0].count, 0);
+    await assert.rejects(setManualFindingResolution(target, { ...input, findingId: "missing" }), /Finding not found/);
+    await assert.rejects(setManualFindingResolution({ ...target, claims: { ...target.claims, tenant: "foreign" } }, input), /no longer available/);
+    await assert.rejects(setManualFindingResolution({ ...target, claims: { ...target.claims, installation: 99 } }, input), /no longer available/);
+    await pool.query("DELETE FROM member");
+    await assert.rejects(setManualFindingResolution(target, input), /no longer available/);
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM api_finding_resolution")).rows[0].count, 0);
+  } finally {
+    pools.delete("app");
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await pool.end();
+  }
+});

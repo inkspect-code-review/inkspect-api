@@ -1,0 +1,17 @@
+# inkspect-api
+
+Self-hosted API and shared worker implementation. No payment or Cloud policy code.
+
+## Local development
+
+Requires Node >=22.13. Run `npm ci`, `npm run audit`, `npm test`, and `npm run build`.
+
+This checkout installs independently: internal dependencies are versioned source packages in `vendor/`, with integrity recorded in `package-lock.json`. No sibling checkout, symlink, private registry login or original monorepo is needed. They are generated dependency artifacts; edit each dependency in its own repository and rebuild it with `npm run pack`. Never edit installed package copies.
+
+Internal dependencies: `@inkspect/core`.
+
+Copy `.env.example` to `.env.local`, configure a dedicated database and auth origin, then run `npm run migrate`. Build first, then `npm start`. Workers: `npm run metadata`, `npm run pulls`, `npm run engine`. Engine requires a Rust binary, GitHub App, model/retrieval configuration and activation via `node dist/engine-admin.mjs activate GENERATION http://127.0.0.1:8091`. All listeners default to loopback.
+
+Use the main `inkspect` repository to assemble compatible self-hosted releases. Repository privacy and package publication are controlled separately; all new repositories currently remain private. No production deployment is performed by local build/test commands.
+
+Licensing is pending owner approval. `LICENSE.proposed` is a draft; this snapshot is not yet a public open-source release.

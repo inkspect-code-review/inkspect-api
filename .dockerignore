@@ -1,0 +1,8 @@
+.git
+node_modules
+dist
+.local
+.artifacts
+.env
+.env.*
+*.pem
