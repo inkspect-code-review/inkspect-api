@@ -110,6 +110,11 @@ test('check delivery recovers a lost create receipt and updates the app-owned ch
   assert.equal(writes[0].body.head_sha, check.head);
   assert.equal(check.id, 42);
   assert.equal(check.phase, 'clean');
+  const notice = { title: 'Review unavailable', summary: 'Check workspace settings.' };
+  await github.updateCheck(check, 'unavailable', 'https://example.org', guard, notice);
+  assert.equal(writes.at(-1)?.body.status, 'completed');
+  assert.equal(writes.at(-1)?.body.conclusion, 'failure');
+  assert.deepEqual(writes.at(-1)?.body.output, notice);
   check.threshold = 'P2';
   await github.updateCheck(check, 'blocking', 'https://example.org', guard);
   assert.equal(writes.at(-1)?.body.conclusion, 'failure');

@@ -57,7 +57,7 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
       if (!address.startsWith('https://api.github.com/')) return originalFetch(url, init);
       if (address.endsWith('/installation')) return Response.json({ id: 1, app_id: 7 });
       if (address.endsWith('/access_tokens')) return Response.json({ token: 'synthetic-token', repositories: [{ id: 2 }] });
-      if (address.endsWith('/pulls/3')) return Response.json({ number: 3, state: 'open', draft: false, base: { sha: 'a'.repeat(40), repo: { id: 2, full_name: 'team/repo' } }, head: { sha: 'b'.repeat(40) } });
+      if (address.endsWith('/pulls/3')) return Response.json({ number: 3, title: 'Update dependencies', state: 'open', draft: false, base: { sha: 'a'.repeat(40), repo: { id: 2, full_name: 'team/repo' } }, head: { sha: 'b'.repeat(40) } });
       if (address.includes('/compare/')) return Response.json({ merge_base_commit: { sha: 'c'.repeat(40) } });
       throw new Error('Unexpected upstream call');
     };
@@ -80,6 +80,11 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
     const access = { organizationId: 'tenant', userId: 'person', member: { role: 'owner' }, connections: [] } as Parameters<ReviewLifecycle['start']>[0];
     const jobs = await Promise.all([lifecycle.start(access, body, claims, send), lifecycle.start(access, body, claims, send)]);
     assert.equal(jobs[0].job.id, jobs[1].job.id);
+    assert.equal(jobs[0].snapshot.title, 'Update dependencies');
+    await pool.query("UPDATE api_engine_job SET snapshot=snapshot-'title' WHERE id=$1", [jobs[0].job.id]);
+    const resolved = await send('/github/pulls/3/title', 'GET', undefined, claims);
+    assert.equal(resolved.title, 'Update dependencies');
+    assert.equal((await send(`/jobs/${jobs[0].job.id}`, 'GET', undefined, claims)).snapshot.title, resolved.title);
     assert.equal((await pool.query('SELECT count(*)::int n FROM api_engine_job')).rows[0].n, 1);
     assert.equal((await pool.query('SELECT job_id FROM workspace_review_execution')).rows[0].job_id, jobs[0].job.id);
     await assert.rejects(send('/jobs', 'GET', undefined, { ...claims, tenant: 'other' }), /access is no longer/);

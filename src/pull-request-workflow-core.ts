@@ -7,7 +7,7 @@ import { ReviewError } from "@inkspect/core/lib/review-access";
 import type { ReportResponse, ReviewJob } from "@inkspect/core/lib/review-types";
 import { database } from "./database";
 import { eligibility, enqueueIndex, lastIndexed, latestIndex, type Worker } from "./repository-store";
-import { CheckUnavailable, PullGitHub, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
+import { CheckUnavailable, PullGitHub, type CheckNotice, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
 import { overviewSeverity, overviewSeverities } from "@inkspect/core/lib/review-overview";
 import { originalThread, continuingSummary } from "./continuing-findings";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
@@ -34,7 +34,10 @@ const fitsNotes = (notes: ReviewNote[], note: ReviewNote) =>
   notes.length < 5 && [...notes, note].reduce((size, n) => size + Buffer.byteLength(n.body), 0) <= 2000;
 
 const commonServices = { engineRequest, admitIndex, eligibility, enqueueIndex, lastIndexed, latestIndex };
-export type WorkflowServices = typeof commonServices & { reviewLifecycle: ReviewLifecycle; pausedLabel: string; admissionHelp: string };
+export type WorkflowServices = typeof commonServices & { reviewLifecycle: ReviewLifecycle; pausedLabel: string; admissionHelp: string;
+  admissionBlock?: (error: unknown) => CheckNotice | undefined;
+  waitingBlock?: (row: Workflow, job: ReviewJob) => Promise<CheckNotice | undefined>;
+};
 export const workflowServices = (reviewLifecycle: ReviewLifecycle, pausedLabel = 'Review paused', admissionHelp = 'Check repository access, model availability and instance provider configuration in Inkspect.'): WorkflowServices => ({ ...commonServices, reviewLifecycle, pausedLabel, admissionHelp });
 export async function advancePull(row: Workflow, worker: Binding, github: PullGitHub,
   save: () => Promise<void>, guardBinding: () => Promise<void>, messages: Message[], saveMessage: (m: Message) => Promise<void>, services: WorkflowServices): Promise<number | null> {
@@ -50,13 +53,30 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     link.search = new URLSearchParams({ view: 'reviews', repositoryId: row.repository_id, ...(job ? { jobId: job } : {}) }).toString();
     return link.href;
   };
-  const syncCheck = async (check: ReviewCheck, phase: CheckPhase, validate: () => Promise<void>) => {
+  const syncCheck = async (check: ReviewCheck, phase: CheckPhase, validate: () => Promise<void>, notice?: CheckNotice) => {
     if (!github.checksEnabled || check.phase === phase) return;
-    await github.updateCheck(check, phase, reviewLink(check.job), validate);
+    // A completed check stays in history when the same job resumes.
+    if (check.phase === 'unavailable' && ['queued', 'paused', 'in_progress'].includes(phase)) {
+      check.attempt = (check.attempt ?? 0) + 1;
+      delete check.id;
+      delete check.phase;
+      await save();
+    }
+    await github.updateCheck(check, phase, reviewLink(check.job.startsWith('J-') ? check.job : undefined), validate, notice);
     await save();
   };
+  const blockedCheck = async (identity: string, notice: CheckNotice) => {
+    if (s.check?.job !== identity) {
+      s.check = { job: identity, head: current.head, threshold: worker.check_threshold ?? 'P0' };
+      await save();
+    }
+    try { await syncCheck(s.check, 'unavailable', guard, notice); }
+    catch (error) { if (!(error instanceof CheckUnavailable)) throw error; }
+    await publish(`## Inkspect · ${notice.title}\n\n${notice.summary}`);
+    return 60_000;
+  };
   const stopCheck = async () => {
-    if (s.check && (!s.check.phase || s.check.phase === 'in_progress')) await syncCheck(s.check, 'cancelled', guardBinding);
+    if (s.check && (!s.check.phase || ['queued', 'paused', 'in_progress'].includes(s.check.phase))) await syncCheck(s.check, 'cancelled', guardBinding);
   };
   if (isIgnoredAuthor(current.author, worker.ignored_authors)) {
     await stopCheck();
@@ -210,7 +230,8 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
       await publish(`## Inkspect · Indexing repository\n\nStage: **${safeText(progress.stage)}**\n\nFiles processed: ${progress.scan.processed}/${progress.scan.total} · Chunks embedded: ${progress.embedded}/${progress.chunks}\n\nReview will start when repository context is ready.`);
       return 10_000;
     }
-    await publish(`## Inkspect · Review queued\n\nRepository index ready. Reviewing commit \`${s.head}\`.`);
+    const admissionCheck = `admission/${row.id}/${current.head}/${current.base}/${s.rerun ?? 'first'}`;
+    if (s.check?.job !== admissionCheck) await publish(`## Inkspect · Review queued\n\nRepository index ready. Reviewing commit \`${s.head}\`.`);
     await guard();
     if (!worker.automatic) return null;
     // Freeze the notes before the first attempt: an uncertain admission retries
@@ -225,6 +246,8 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     } catch (error) {
       if (error instanceof ReviewError && [400, 402, 403, 409].includes(error.status)) {
         delete s.admitting; await save();
+        const block = services.admissionBlock?.(error);
+        if (block) return blockedCheck(admissionCheck, block);
         await publish(`## Inkspect · Review needs attention\n\nThe review could not start. ${services.admissionHelp}`);
         return 60_000;
       }
@@ -311,8 +334,15 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
       : `## Inkspect · Review ${job.job.status === 'cancelled' ? 'cancelled' : 'failed'}\n\nThe review did not finish. Check the [review in Inkspect](${reviewLink(s.job)}), then comment \`${reviewCommand}\` to retry.`);
     return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : retryCheck ? 30_000 : null;
   }
-  await reviewCheck('in_progress');
-  await publish(`## Inkspect · ${job.job.status === 'paused' ? services.pausedLabel : job.job.status === 'queued' ? 'Review queued' : 'Review in progress'}\n\nReviewing commit \`${s.head}\`.\n\nThe final report will replace this message.`);
+  if (job.job.status === 'queued' || job.job.status === 'paused') {
+    const block = await services.waitingBlock?.(row, job);
+    if (block) {
+      if (job.job.id !== s.job || job.snapshot.head !== current.head || job.snapshot.repository_id !== row.repository_id || job.snapshot.base_tip !== current.base) throw new Error('Review check target mismatch');
+      return blockedCheck(job.job.id, block);
+    }
+  }
+  await reviewCheck(job.job.status === 'queued' || job.job.status === 'paused' ? job.job.status : 'in_progress');
+  await publish(`## Inkspect · ${job.job.status === 'paused' ? services.pausedLabel : job.job.status === 'queued' ? 'Review queued' : 'Review in progress'}\n\nCommit \`${s.head}\`.\n\nThe final report will replace this message.`);
   return 10_000;
 }
 

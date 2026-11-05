@@ -47,6 +47,20 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
         return json({ repositories: [{ id: claims.repository, full_name: worker.full_name, private: true }],
           ...policy.configuration(host), execution_mode: 'api', engine: 'rust' });
       }
+      const pullTitle = /^\/github\/pulls\/([1-9]\d*)\/title$/.exec(url.pathname);
+      if (pullTitle && req.method === 'GET') {
+        const number = Number(pullTitle[1]);
+        if (!Number.isSafeInteger(number)) throw new ReviewError(400, 'Invalid pull request number.');
+        const gh = await PullGitHub.open(worker, number, signal);
+        const { title } = await gh.snapshot();
+        if (title) {
+          await database().query(`UPDATE api_engine_job SET snapshot=jsonb_set(snapshot,'{title}',to_jsonb($5::text))
+            WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4
+              AND request->>'number'=$6 AND NULLIF(snapshot->>'title','') IS NULL`,
+          [claims.tenant, worker.repository_id, claims.connection, claims.installation, title, String(number)]);
+        }
+        return json({ title });
+      }
       if (url.pathname === '/github/pulls' && req.method === 'GET') {
         const page = Number(url.searchParams.get('page') || 1);
         if (!Number.isInteger(page) || page < 1 || page > 100) throw new ReviewError(400, 'Invalid page.');
@@ -83,7 +97,7 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
         const base = compare.merge_base_commit?.sha;
         if (!/^[a-f0-9]{40}$/.test(base)) throw new Error('Invalid merge base');
         const id = jobID(identity);
-        const snapshot = { url: `https://github.com/${worker.full_name}/pull/${body.number}`, repository_id: worker.repository_id, base_tip: live.base, base, head: live.head, review_model_id: body.byok?.model || host.model_id };
+        const snapshot = { title: live.title, url: `https://github.com/${worker.full_name}/pull/${body.number}`, repository_id: worker.repository_id, base_tip: live.base, base, head: live.head, review_model_id: body.byok?.model || host.model_id };
         const tx = await database().connect();
         try {
           await tx.query('BEGIN');

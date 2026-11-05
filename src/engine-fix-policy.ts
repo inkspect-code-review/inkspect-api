@@ -9,6 +9,7 @@ import type { ProviderCredential } from "./engine-credentials";
 
 export interface FixPolicy {
   managedMode: string;
+  commitCoAuthor?: string;
   provider(claims: EngineScope): Promise<ByokSelection | null>;
   reserve(input: ReviewIdentityInput & { repositoryName?: string }, host: HostConfig): Promise<unknown>;
   attach(input: ReviewIdentityInput, jobId: string, tx: PoolClient): Promise<void>;

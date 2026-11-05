@@ -10,6 +10,10 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 #### Added
 
+- Allow autofix publishers to include a co-author in fix commit messages.
+- Allow review policies to explain blocked admissions and waiting jobs in the PR summary and a failed check.
+- Save pull request titles with reviews and show queued and paused reviews in GitHub checks.
+
 - Apply a configurable workspace severity threshold to new GitHub review checks, defaulting to P0.
 
 - Publish an Inkspect check for each PR review, showing progress, critical findings and incomplete or failed reviews.

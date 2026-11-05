@@ -180,14 +180,17 @@ export function validateRepair(value: any, job: EngineJob): { path: string; cont
 }
 
 export async function commitRepair(worker: Worker, job: EngineJob, files: {path:string;content:string}[], token: string, signal: AbortSignal,
-  retainReceipt?: (receipt: {status:number;request_id:string|null;body:string}) => Promise<void>) {
+  retainReceipt?: (receipt: {status:number;request_id:string|null;body:string}) => Promise<void>, coAuthor?: string) {
   // expectedHeadOid is GitHub's atomic compare-and-swap. Never force-update a
   // ref, rebase generated edits or retry an ambiguous mutation.
+  const body = [`Inkspect-Fix: ${job.id}\nSource-Review: ${job.request.fix_of}`,
+    'Generated from the reviewed commit. Repository tests were not executed by the fix engine; verify with CI and review.'];
+  if (coAuthor) body.push(`Co-Authored-By: ${coAuthor}`);
   const response = await fetch('https://api.github.com/graphql', { method:'POST', redirect:'error', signal:AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     headers: { Authorization:`Bearer ${token}`, 'Content-Type':'application/json', 'User-Agent':'Inkspect-API' },
     body:JSON.stringify({ query:'mutation Fix($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }', variables:{ input:{
       branch:{ repositoryNameWithOwner:worker.full_name, branchName:job.snapshot.fix_branch }, expectedHeadOid:job.snapshot.head,
-      message:{ headline:'fix: address Inkspect review findings', body:`Inkspect-Fix: ${job.id}\nSource-Review: ${job.request.fix_of}\n\nGenerated from the reviewed commit. Repository tests were not executed by the fix engine; verify with CI and review.` },
+      message:{ headline:'fix: address Inkspect review findings', body:body.join('\n\n') },
       fileChanges:{ additions:files.map(file => ({ path:file.path, contents:Buffer.from(file.content).toString('base64') })) },
     } } }) });
   // A small bounded receipt is all that is expected from this mutation.
@@ -261,7 +264,7 @@ export async function runFix(policy: FixPolicy, job: EngineJob, worker: Worker, 
       // job snapshot. Responses may echo input files; never save request headers or tokens.
       await writeFile(resolve(process.env.INKSPECT_RUST_STATE || '/var/lib/inkspect/rust', job.id, 'commit-receipt.json'),
         JSON.stringify(receipt), {mode:0o600,flag:'wx'});
-    });
+    }, policy.commitCoAuthor);
     await database().query(`UPDATE api_engine_job SET snapshot=snapshot || $2::jsonb WHERE id=$1`, [job.id, { fix_commit:oid, fix_publishing:false }]);
     // Do not persist file contents in the public report. No extra review is
     // enqueued: the synchronize webhook honors the repository's auto-review setting.

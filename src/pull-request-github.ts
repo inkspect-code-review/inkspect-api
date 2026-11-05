@@ -8,15 +8,19 @@ export class GitHubFailure extends Error {
 }
 export type Delivery = { id?: number; sending?: boolean; body?: string };
 export class CheckUnavailable extends Error {}
-export type ReviewCheck = { job: string; head: string; id?: number; threshold?: CheckThreshold; phase?: CheckPhase | 'critical' };
-export type CheckPhase = 'in_progress' | 'clean' | 'blocking' | 'incomplete' | 'failed' | 'cancelled';
+export type CheckNotice = { title: string; summary: string };
+export type ReviewCheck = { job: string; head: string; id?: number; attempt?: number; threshold?: CheckThreshold; phase?: CheckPhase | 'critical' };
+export type CheckPhase = 'unavailable' | 'queued' | 'paused' | 'in_progress' | 'clean' | 'blocking' | 'incomplete' | 'failed' | 'cancelled';
 const checkOutputs = {
+  unavailable: ['Review unavailable', 'The review cannot proceed.'],
+  queued: ['Review queued', 'Waiting for a review worker to start.'],
+  paused: ['Review paused', 'The review is waiting to resume.'],
   in_progress: ['Review in progress', 'Inkspect is reviewing this commit.'],
   incomplete: ['Review incomplete', 'Inkspect could not verify a complete review of this commit.'],
   failed: ['Review failed', 'The review could not finish.'],
   cancelled: ['Review cancelled', 'Review of this revision stopped.'],
 } as const;
-export type PullSnapshot = { head: string; base: string; open: boolean; draft: boolean; author?: string };
+export type PullSnapshot = { head: string; base: string; open: boolean; draft: boolean; title?: string; author?: string };
 type Comment = { id: number; body: string; user?: { type: string; login?: string }; performed_via_github_app?: { id: number }; issue_url?: string; in_reply_to_id?: number; path?: string; line?: number };
 
 export type FindingThread = { id: number; job: string; finding: string; path: string; line: number; body: string };
@@ -55,7 +59,7 @@ export class PullGitHub {
       if (size > 8 * 1024 * 1024) { await reader.cancel(); throw new Error('GitHub response too large'); } chunks.push(value); }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
-  async updateCheck(check: ReviewCheck, phase: CheckPhase, details: string, guard: () => Promise<void>) {
+  async updateCheck(check: ReviewCheck, phase: CheckPhase, details: string, guard: () => Promise<void>, notice?: CheckNotice) {
     const request = async (path: string, method = 'GET', payload?: object) => {
       try { return await this.request(path, method, payload); }
       catch (error) { throw new CheckUnavailable('GitHub check unavailable', { cause: error }); }
@@ -66,9 +70,10 @@ export class PullGitHub {
     const [title, summary] = phase === 'blocking' ? ['Blocking findings', `The review found issues in the blocking range (${range}).`]
       : phase === 'clean' ? ['No blocking findings', `Review completed with no findings in the blocking range (${range}).`]
       : checkOutputs[phase];
-    const conclusions = { clean: 'success', blocking: 'failure', incomplete: 'action_required', failed: 'failure', cancelled: 'cancelled' };
-    const body = { details_url: details, output: { title, summary },
-      ...(phase === 'in_progress' ? { status: 'in_progress' } : { status: 'completed', conclusion: conclusions[phase] }) };
+    const externalId = check.attempt ? `${check.job}/${check.attempt}` : check.job;
+    const conclusions = { unavailable: 'failure', clean: 'success', blocking: 'failure', incomplete: 'action_required', failed: 'failure', cancelled: 'cancelled' };
+    const body = { details_url: details, output: notice ?? { title, summary },
+      ...(phase === 'queued' ? { status: 'queued' } : phase === 'in_progress' || phase === 'paused' ? { status: 'in_progress' } : { status: 'completed', conclusion: conclusions[phase] }) };
     if (!check.id) {
       // The job ID is stable across worker restarts, including a lost POST receipt.
       const query = new URLSearchParams({ check_name: name, app_id: String(this.worker.app_id), filter: 'all', per_page: '100' });
@@ -76,7 +81,7 @@ export class PullGitHub {
         query.set('page', String(page));
         const { check_runs: runs } = await request(`${this.root}/commits/${check.head}/check-runs?${query}`);
         if (!Array.isArray(runs)) throw new Error('Invalid check list');
-        const prior = runs.find(run => run.external_id === check.job && run.head_sha === check.head &&
+        const prior = runs.find(run => run.external_id === externalId && run.head_sha === check.head &&
           String(run.app?.id) === String(this.worker.app_id) && run.name === name);
         if (prior) {
           if (!Number.isSafeInteger(prior.id) || prior.id < 1) throw new Error('Invalid check receipt');
@@ -97,7 +102,7 @@ export class PullGitHub {
         throw error;
       }
     } else {
-      const created = await request(`${this.root}/check-runs`, 'POST', { ...body, name, external_id: check.job, head_sha: check.head });
+      const created = await request(`${this.root}/check-runs`, 'POST', { ...body, name, external_id: externalId, head_sha: check.head });
       if (!Number.isSafeInteger(created.id) || created.id < 1) throw new Error('Invalid check receipt');
       check.id = created.id;
     }
@@ -109,6 +114,7 @@ export class PullGitHub {
         pull.base?.repo?.full_name?.toLowerCase() !== this.worker.full_name.toLowerCase() ||
         !/^[a-f0-9]{40}$/.test(pull.head?.sha) || !/^[a-f0-9]{40}$/.test(pull.base?.sha) || typeof pull.draft !== 'boolean') throw new Error('GitHub snapshot mismatch');
     return { head: pull.head.sha, base: pull.base.sha, open: pull.state === 'open', draft: pull.draft,
+      title: typeof pull.title === 'string' ? pull.title.trim() || undefined : undefined,
       author: typeof pull.user?.login === 'string' ? pull.user.login : undefined };
   }
   async eyes() { await this.request(`${this.root}/issues/${this.number}/reactions`, 'POST', { content: 'eyes' }); }
