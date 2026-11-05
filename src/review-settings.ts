@@ -3,6 +3,41 @@ import { organizationAccess } from "@inkspect/core/lib/organization-access";
 import { readReviewJSON, ReviewError, reviewJSON, reviewFailure } from "@inkspect/core/lib/review-access";
 import { database } from "./database";
 
+export function normalizeIgnoredAuthors(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 100) throw new ReviewError(400, 'Enter up to 100 GitHub usernames.');
+  return [...new Set(value.map(entry => {
+    if (typeof entry !== 'string') throw new ReviewError(400, 'Enter GitHub usernames, such as dependabot[bot].');
+    const login = entry.trim().replace(/^@/, '').toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?(?:\[bot\])?$/.test(login))
+      throw new ReviewError(400, 'Enter GitHub usernames, such as dependabot[bot], without URLs or wildcards.');
+    return login;
+  }))];
+}
+
+export function isIgnoredAuthor(author: string | undefined, ignored: readonly string[] = []): boolean {
+  if (!ignored.length) return false;
+  // Missing GitHub identity must not bypass an active exclusion list.
+  if (!author) throw new Error('Pull request author unavailable');
+  return ignored.includes(author.toLowerCase());
+}
+
+export async function ignoredAuthors(organization: string): Promise<string[]> {
+  return (await database().query('SELECT ignored_authors FROM api_review_settings WHERE organization_id=$1', [organization])).rows[0]?.ignored_authors ?? [];
+}
+
+export async function saveIgnoredAuthors(organization: string, user: string, authors: string[]) {
+  const normalized = normalizeIgnoredAuthors(authors);
+  const tx = await database().connect();
+  try {
+    await tx.query('BEGIN');
+    await tx.query(`INSERT INTO api_review_settings(organization_id,updated_by,ignored_authors) VALUES($1,$2,$3)
+      ON CONFLICT(organization_id) DO UPDATE SET ignored_authors=excluded.ignored_authors,updated_by=excluded.updated_by,updated_at=clock_timestamp()`, [organization,user,normalized]);
+    // Recheck existing work immediately, including PRs that can now resume.
+    await tx.query('UPDATE api_pull_request_workflow SET wake_at=clock_timestamp(),next_run_at=clock_timestamp() WHERE organization_id=$1', [organization]);
+    await tx.query('COMMIT');
+  } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
+}
+
 export async function automaticReviews(organization: string) {
   return (await database().query('SELECT automatic FROM api_review_settings WHERE organization_id=$1', [organization])).rows[0]?.automatic ?? true;
 }
@@ -34,16 +69,22 @@ export async function saveAutomaticFix(organization: string, user: string, enabl
   } catch(error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
 }
 
-export async function reviewSettings(request: Request, auth: Auth, services = { automaticReviews, saveAutomaticReviews, automaticFix, saveAutomaticFix }) {
+export async function reviewSettings(request: Request, auth: Auth, services = { automaticReviews, saveAutomaticReviews, automaticFix, saveAutomaticFix, ignoredAuthors, saveIgnoredAuthors }) {
   try {
     const access = await organizationAccess(request, auth);
-    if (request.method === 'GET') return reviewJSON({ automatic: await services.automaticReviews(access.organizationId), auto_fix: (await services.automaticFix(access.organizationId)).auto_fix, can_manage: access.canManage });
+    const response = async () => reviewJSON({ automatic: await services.automaticReviews(access.organizationId), auto_fix: (await services.automaticFix(access.organizationId)).auto_fix, ignored_authors: await services.ignoredAuthors(access.organizationId), can_manage: access.canManage });
+    if (request.method === 'GET') return await response();
     if (request.method !== 'POST') throw new ReviewError(405, 'Method not allowed.');
     if (!access.canManage) throw new ReviewError(403, 'Only workspace owners and admins can change review automation.');
     const body = await readReviewJSON(request);
-    if (Object.keys(body).some(k => !['automatic','auto_fix'].includes(k)) || Object.keys(body).length !== 1 || typeof (body.automatic ?? body.auto_fix) !== 'boolean') throw new ReviewError(400, 'Choose whether the review automation setting is enabled.');
-    if (typeof body.auto_fix === 'boolean') await services.saveAutomaticFix(access.organizationId, access.user.id, body.auto_fix);
-    else await services.saveAutomaticReviews(access.organizationId, access.user.id, body.automatic as boolean);
-    return reviewJSON({ automatic: await services.automaticReviews(access.organizationId), auto_fix: (await services.automaticFix(access.organizationId)).auto_fix, can_manage: true });
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || !['automatic','auto_fix','ignored_authors'].includes(keys[0])) throw new ReviewError(400, 'Choose one review automation setting to update.');
+    if (keys[0] === 'ignored_authors') await services.saveIgnoredAuthors(access.organizationId, access.user.id, normalizeIgnoredAuthors(body.ignored_authors));
+    else {
+      if (typeof body[keys[0]] !== 'boolean') throw new ReviewError(400, 'Choose whether the review automation setting is enabled.');
+      if (keys[0] === 'auto_fix') await services.saveAutomaticFix(access.organizationId, access.user.id, body.auto_fix as boolean);
+      else await services.saveAutomaticReviews(access.organizationId, access.user.id, body.automatic as boolean);
+    }
+    return await response();
   } catch (error) { return reviewFailure(error); }
 }

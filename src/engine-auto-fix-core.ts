@@ -1,6 +1,6 @@
 import { database } from "./database";
 import { authorizedWorker, jobClaims, type EngineJob } from "./engine-store";
-import { automaticFix } from "./review-settings";
+import { automaticFix, ignoredAuthors, isIgnoredAuthor } from "./review-settings";
 import { FixAdmissionBusy } from "./engine-fix-core";
 import type { EngineHttpPolicy } from "./engine-http-policy";
 import { PullGitHub } from "./pull-request-github";
@@ -31,6 +31,9 @@ export async function enqueueAutomaticFixes(host:HostConfig, handleFix: (...args
       const worker=await authorizedWorker(claims);
       const signal=AbortSignal.timeout(25_000);
       const gh=await PullGitHub.open(worker,source.request.number,signal,true);
+      if (isIgnoredAuthor((await gh.snapshot()).author, await ignoredAuthors(source.organization_id))) {
+        await finish(source,'skipped','The PR author is ignored in workspace settings.');continue;
+      }
       const commit=await gh.request(`${gh.root}/commits/${source.snapshot.head}`);
       // Also handles a lost publication receipt: the durable GitHub marker
       // breaks the cycle even if our local job never stored the resulting SHA.

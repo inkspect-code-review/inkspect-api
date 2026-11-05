@@ -5,7 +5,7 @@ export class GitHubFailure extends Error {
   constructor(public status: number) { super(`github_${status}`); }
 }
 export type Delivery = { id?: number; sending?: boolean; body?: string };
-export type PullSnapshot = { head: string; base: string; open: boolean; draft: boolean };
+export type PullSnapshot = { head: string; base: string; open: boolean; draft: boolean; author?: string };
 type Comment = { id: number; body: string; user?: { type: string }; performed_via_github_app?: { id: number }; issue_url?: string; in_reply_to_id?: number; path?: string; line?: number };
 
 export class PullGitHub {
@@ -33,7 +33,8 @@ export class PullGitHub {
     if (pull.number !== this.number || String(pull.base?.repo?.id) !== this.worker.repository_id ||
         pull.base?.repo?.full_name?.toLowerCase() !== this.worker.full_name.toLowerCase() ||
         !/^[a-f0-9]{40}$/.test(pull.head?.sha) || !/^[a-f0-9]{40}$/.test(pull.base?.sha) || typeof pull.draft !== 'boolean') throw new Error('GitHub snapshot mismatch');
-    return { head: pull.head.sha, base: pull.base.sha, open: pull.state === 'open', draft: pull.draft };
+    return { head: pull.head.sha, base: pull.base.sha, open: pull.state === 'open', draft: pull.draft,
+      author: typeof pull.user?.login === 'string' ? pull.user.login : undefined };
   }
   async eyes() { await this.request(`${this.root}/issues/${this.number}/reactions`, 'POST', { content: 'eyes' }); }
   async commentEyes(kind: 'issue' | 'inline', id: string) {

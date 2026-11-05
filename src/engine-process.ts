@@ -1,3 +1,4 @@
+import { engineModelEnvironment } from "@inkspect/core/lib/model-transport";
 import type { ProviderCredential } from "./engine-credentials";
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -27,6 +28,10 @@ export async function runRust(mode: 'review' | 'index' | 'index-stats' | 'contex
   env.INKSPECT_APP_ORIGIN = process.env.BETTER_AUTH_URL || 'https://app.inkspect.si';
   for (const key of ['TMPDIR', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'INKSPECT_QDRANT_URL', 'INKSPECT_QDRANT_API_KEY']) {
     if (process.env[key]) env[key] = process.env[key]!;
+  }
+  if(process.env.INKSPECT_AI_PROVIDER === 'inkspect') {
+    for(const key of ['AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_SESSION_TOKEN','AWS_BEARER_TOKEN_BEDROCK'])delete env[key];
+    Object.assign(env,engineModelEnvironment());
   }
   // App credentials and database secrets never reach the review subprocess.
   if (credential) env.INKSPECT_BYOK_STDIN = '1';

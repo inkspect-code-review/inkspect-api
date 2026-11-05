@@ -14,7 +14,7 @@ import { createEngineHandler } from "./engine-http-core";
 import { validateHost, schemaName, engineFailure, INVALID_IGNORE } from "./engine-contract";
 import { authorizedWorker, jobClaims, event, type EngineJob } from "./engine-store";
 import { runRust, readJournal } from "./engine-process";
-import { repositoryToken, fetchRepositoryRevision } from "./metadata";
+import { EmptyRepository, repositoryToken, fetchRepositoryRevision } from "./metadata";
 import type { Worker } from "./repository-store";
 import { connectedRepositories, repositoryIdentity } from "./connected-repositories";
 import { saveReviewModels } from "@inkspect/core/lib/review-models";
@@ -164,7 +164,21 @@ async function runIndex(worker: Worker) {
         if (!(await lock.query(`SELECT 1 FROM ${table} WHERE tenant_id=$1 AND repository_id=$2 AND id=$3 AND status='running'`, [worker.organization_id, worker.repository_id, row.id])).rowCount) abort.abort();
       } catch { abort.abort(); } finally { watching = false; }
     }, 3000);
-    const revision = row.progress.analyze_only ? row.progress.revision : await fetchRepositoryRevision(worker, abort.signal);
+    let revision: string;
+    try { revision = row.progress.analyze_only ? row.progress.revision : await fetchRepositoryRevision(worker, abort.signal); }
+    catch (error) {
+      if (!(error instanceof EmptyRepository) || abort.signal.aborted) throw error;
+      await authorizedWorker(claims);
+      await verifyIndexAccess(worker.organization_id, row.subject, worker.repository_id);
+      const progress = indexStage({ ...row.progress, indexed: false, chunks: 0, embedded: 0, reused: 0,
+        scan: { measured: true, stage: 'empty', total: 0, processed: 0, read: 0, skipped: 0, chunks: 0 },
+        error: undefined, error_code: undefined,
+      }, 'empty', 'This repository is empty. Add your first commit, then index this repository.');
+      await lock.query(`UPDATE ${table} SET status='completed',progress=$4,updated_at=clock_timestamp()
+        WHERE tenant_id=$1 AND repository_id=$2 AND id=$3 AND status='running'`,
+        [worker.organization_id, worker.repository_id, row.id, progress]);
+      return; // No clone, embedding, description request or usage settlement.
+    }
     row.progress.revision = revision;
     const token = await repositoryToken(worker, abort.signal, true);
     const [owner, repo] = worker.full_name.split('/');

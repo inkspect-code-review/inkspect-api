@@ -3,8 +3,17 @@ import { readFile } from 'node:fs/promises';
 import { database } from "./database";
 import type { Worker } from "./repository-store";
 export class MetadataFailure extends Error { constructor(public code: string, public status = 0) { super(code); } }
-async function github(path: string, token: string, signal: AbortSignal, body?: object) {
+export class EmptyRepository extends MetadataFailure { constructor() { super('repository_empty', 409); } }
+async function github(path: string, token: string, signal: AbortSignal, body?: object, emptyCommits = false) {
   const response = await fetch(`https://api.github.com${path}`, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'Inkspect-API' }, ...(body ? { body: JSON.stringify(body) } : {}), signal, redirect: 'error' });
+  // Only the commits endpoint's explicit empty-repository response is benign.
+  // Never infer emptiness from repository size, missing permissions or any 409.
+  if (emptyCommits && response.status === 409) {
+    const text = await response.text();
+    let message: unknown;
+    if (text.length <= 1024 * 1024) { try { message = JSON.parse(text)?.message; } catch { /* Keep the upstream failure. */ } }
+    if (message === 'Git Repository is empty.') throw new EmptyRepository();
+  }
   if (!response.ok) throw new MetadataFailure(response.status === 404 || response.status === 401 ? 'access_unavailable' : 'github_unavailable', response.status);
   const text = await response.text();
   if (text.length > 1024 * 1024) throw new MetadataFailure('invalid_metadata');
@@ -60,8 +69,9 @@ export async function refreshOne(signal: AbortSignal, fetcher = fetchMetadata) {
 export async function fetchRepositoryRevision(worker: Worker, signal: AbortSignal) {
   const token = await repositoryToken(worker, signal, true);
   const repo = await github(`/repos/${worker.full_name}`, token, signal);
-  if (String(repo.id) !== worker.repository_id || typeof repo.full_name !== 'string' || repo.full_name.toLowerCase() !== worker.full_name.toLowerCase() || typeof repo.default_branch !== 'string' || !repo.default_branch || repo.default_branch.length > 255) throw new MetadataFailure('invalid_metadata');
-  const commits = await github(`/repos/${worker.full_name}/commits?${new URLSearchParams({ sha: repo.default_branch, per_page: '1' })}`, token, signal);
-  if (!Array.isArray(commits) || commits.length !== 1 || typeof commits[0]?.sha !== 'string' || !/^[a-f0-9]{40}$/.test(commits[0].sha)) throw new MetadataFailure('invalid_metadata');
+  if (String(repo.id) !== worker.repository_id || typeof repo.full_name !== 'string' || repo.full_name.toLowerCase() !== worker.full_name.toLowerCase() || (repo.default_branch != null && (typeof repo.default_branch !== 'string' || !repo.default_branch || repo.default_branch.length > 255))) throw new MetadataFailure('invalid_metadata');
+  const commits = await github(`/repos/${worker.full_name}/commits?${new URLSearchParams({ ...(repo.default_branch ? { sha: repo.default_branch } : {}), per_page: '1' })}`, token, signal, undefined, true);
+  if (Array.isArray(commits) && commits.length === 0) throw new EmptyRepository();
+  if (!repo.default_branch || !Array.isArray(commits) || commits.length !== 1 || typeof commits[0]?.sha !== 'string' || !/^[a-f0-9]{40}$/.test(commits[0].sha)) throw new MetadataFailure('invalid_metadata');
   return commits[0].sha as string;
 }

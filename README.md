@@ -16,6 +16,16 @@ Use the main `inkspect` repository to assemble compatible self-hosted releases. 
 
 Source code is licensed under [MIT](LICENSE). Third-party dependencies retain their own licenses.
 
+## Ignored pull request authors
+
+Workspace owners and admins can manage `ignored_authors` through `/api/review-settings`.
+The list defaults to empty and uses exact, case-insensitive GitHub logins, including
+the `[bot]` suffix for app accounts. Ignored PRs skip automatic reviews, GitHub
+replies and automatic fixes. Existing automatic reviews are cancelled when the
+worker rechecks them; completed reports are retained. Removing an author wakes
+known PRs again. Reviews and fixes explicitly started in the dashboard remain available.
+Apply the API migrations before starting an updated service.
+
 ## Contributing and community
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, commit notation and

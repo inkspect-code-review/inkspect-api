@@ -1,5 +1,5 @@
 import type { RepositoryIndexFreshness } from "@inkspect/core/lib/repository-types";
-import { fetchRepositoryRevision } from "./metadata";
+import { EmptyRepository, fetchRepositoryRevision } from "./metadata";
 import { lastIndexed, type Worker } from "./repository-store";
 
 // UI polling shares a short-lived HEAD read. Admission always reads GitHub again;
@@ -12,7 +12,13 @@ export async function indexFreshness(worker: Worker, signal: AbortSignal, force 
   const cached = heads.get(key);
   let revision = !force && cached && cached.expires > Date.now() ? cached.revision : undefined;
   if (!revision) {
-    revision = await dependencies.fetchRepositoryRevision(worker, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
+    try { revision = await dependencies.fetchRepositoryRevision(worker, AbortSignal.any([signal, AbortSignal.timeout(15_000)])); }
+    catch (error) {
+      if (!(error instanceof EmptyRepository)) throw error;
+      heads.delete(key);
+      // Let the worker record the empty state; it rechecks GitHub on every run.
+      return { up_to_date: false };
+    }
     if (heads.size >= 500) heads.delete(heads.keys().next().value!);
     heads.set(key, { revision, expires: Date.now() + 30_000 });
   }

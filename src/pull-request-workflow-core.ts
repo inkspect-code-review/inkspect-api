@@ -11,6 +11,7 @@ import { PullGitHub, type Delivery } from "./pull-request-github";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
 import { INVALID_IGNORE } from "./engine-contract";
 import { appLogin } from "./pull-request-events";
+import { isIgnoredAuthor } from "./review-settings";
 
 const ignoreDocs = '[how `.inkspectignore` works](https://inkspect.si/inkspectignore)';
 
@@ -22,7 +23,7 @@ export type WorkflowState = { head?: string; base?: string; index?: string; job?
   notes?: ReviewNote[]; admitting?: boolean; published?: string };
 export type Workflow = { id: string; organization_id: string; repository_id: string; connection_id: string;
   installation_id: string; number: number; state: WorkflowState };
-type Binding = Worker & { subject: string; automatic: boolean };
+type Binding = Worker & { subject: string; automatic: boolean; ignored_authors?: string[] };
 type Message = { comment_id: string; kind: 'issue' | 'inline'; sender: string; intent: 'review' | 'explain'; reply_to: string | null;
   note?: string | null; state: { ignored?: boolean; eyes?: boolean; requested?: boolean; job?: string; done?: boolean; delivery?: Delivery } };
 const terminal = (status: string) => ['completed', 'failed', 'cancelled'].includes(status);
@@ -41,10 +42,26 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     installation: Number(row.installation_id), repository: Number(row.repository_id) };
   const send = (path: string, method: 'GET' | 'POST' = 'GET', body?: object) => services.engineRequest(path, method, body, claims);
   const current = await github.snapshot();
+  await guardBinding();
+  if (isIgnoredAuthor(current.author, worker.ignored_authors)) {
+    s.stopped = true; await save();
+    for (const message of messages) {
+      message.state.ignored = true; await saveMessage(message);
+    }
+    if (s.job) {
+      let old = await send(`/jobs/${s.job}`) as ReviewJob;
+      if (!terminal(old.job.status)) old = await send(`/jobs/${s.job}/cancel`, 'POST', {}) as ReviewJob;
+      await services.reviewLifecycle.settle(row.organization_id, old);
+      // Running jobs finish cancellation asynchronously; keep settling them.
+      if (!terminal(old.job.status)) return 10_000;
+    }
+    return null;
+  }
   const marker = `<!-- inkspect:pr:${row.id} -->`;
   const guard = async () => {
     await guardBinding();
     const live = await github.snapshot();
+    if (isIgnoredAuthor(live.author, worker.ignored_authors)) throw new ReviewError(409, 'Pull request author is ignored.');
     if (live.head !== current.head || live.base !== current.base || live.open !== current.open || live.draft !== current.draft) throw new Error('Pull request changed');
   };
   const publish = async (body: string) => {
@@ -150,6 +167,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     // Read the setting again at the point of paid admission, not only receipt.
     await guardBinding();
     if (!worker.automatic) return null;
+    if (isIgnoredAuthor(current.author, worker.ignored_authors)) return 1000;
     const indexed = await services.lastIndexed(worker);
     if (!indexed?.progress.indexed) {
       let index = await services.latestIndex(worker);
@@ -164,6 +182,8 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
         if (!check.allowed) { await publish(`## Inkspect · Preparing repository\n\n${safeText(check.reason || 'Checking repository access.')}`); return check.support_required ? null : 15_000; }
         if (!s.index || (index && index.id !== s.index)) s.index = randomUUID();
         await save();
+        await guard();
+        if (!worker.automatic) return null;
         await services.admitIndex(row.organization_id, worker.subject, row.repository_id, s.index);
         index = await services.enqueueIndex(worker, s.index, worker.subject, false);
       }
@@ -236,7 +256,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
 }
 
 async function bindingFor(tx: PoolClient, row: Workflow): Promise<Binding | undefined> {
-  return (await tx.query<Binding>(`SELECT w.*,m."userId" AS subject,coalesce(s.automatic,true) AS automatic
+  return (await tx.query<Binding>(`SELECT w.*,m."userId" AS subject,coalesce(s.automatic,true) AS automatic,coalesce(s.ignored_authors,'{}'::text[]) AS ignored_authors
     FROM api_repository_worker w JOIN "githubConnection" c ON c.id=w.connection_id AND c."organizationId"=w.organization_id AND c."installationId"=w.installation_id::text
     JOIN "githubRepositoryClaim" claim ON claim."organizationId"=w.organization_id AND claim."repositoryId"=w.repository_id
     JOIN member m ON m."organizationId"=w.organization_id AND m."userId"=claim."accountId"
@@ -271,6 +291,7 @@ export async function processPullRequest(signal: AbortSignal, services: Workflow
             const live = await bindingFor(tx, row);
             if (!live || live.subject !== worker.subject) throw new Error('Repository connection changed');
             worker.automatic = live.automatic;
+            worker.ignored_authors = live.ignored_authors;
           };
           const github = await PullGitHub.open(worker, row.number, AbortSignal.any([signal, abort.signal, AbortSignal.timeout(120_000)]));
           const messages = (await tx.query<Message>(`SELECT * FROM api_pull_request_message WHERE workflow_id=$1 AND NOT coalesce((state->>'done')::boolean,false) AND NOT coalesce((state->>'ignored')::boolean,false) ORDER BY created_at LIMIT 50`, [row.id])).rows;

@@ -1,3 +1,4 @@
+import { EmptyRepository } from '../../src/metadata';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
@@ -27,4 +28,16 @@ test('missing committed index permits retry, while upstream errors fail closed a
  const failure=async()=>{throw new Error('GitHub unavailable');};
  assert.deepEqual(await indexFreshness(worker,signal,true,{lastIndexed:async()=>null,fetchRepositoryRevision:failure}),{up_to_date:false});
  await assert.rejects(indexFreshness(worker,signal,true,{lastIndexed:async()=>saved('a'.repeat(40)),fetchRepositoryRevision:failure}),/unavailable/);
+});
+
+
+test('a newly empty repository invalidates cached HEAD and remains retryable after the first commit',async()=>{
+ const worker=makeWorker(),signal=new AbortController().signal;
+ let empty=false,head='a'.repeat(40);
+ const dependencies={lastIndexed:async()=>saved('a'.repeat(40)),fetchRepositoryRevision:async()=>{if(empty)throw new EmptyRepository();return head;}};
+ assert.equal((await indexFreshness(worker,signal,false,dependencies)).up_to_date,true);
+ empty=true;
+ assert.deepEqual(await indexFreshness(worker,signal,true,dependencies),{up_to_date:false});
+ empty=false;head='b'.repeat(40);
+ assert.deepEqual(await indexFreshness(worker,signal,false,dependencies),{up_to_date:false,revision:head});
 });

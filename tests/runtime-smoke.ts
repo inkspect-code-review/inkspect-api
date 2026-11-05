@@ -1,3 +1,4 @@
+import {checkEmptyIndex} from './fixtures/empty-index-runtime';
 import assert from 'node:assert/strict';
 import {Pool} from 'pg';
 import {randomUUID,randomBytes} from 'node:crypto';
@@ -14,7 +15,7 @@ if(!database)throw new Error('SMOKE_TEST_DATABASE_URL must point to a disposable
 const schema='runtime_'+randomUUID().replaceAll('-',''),url=new URL(database);url.searchParams.set('options','-c search_path='+schema);
 const pool=new Pool({connectionString:url.toString()});
 const origin='https://self-hosted.example',organizationName='Synthetic self-hosted QA';
-const env={PATH:process.env.PATH!,NODE_ENV:'production',INKSPECT_DEV_LOGS:'false',NEXT_TELEMETRY_DISABLED:'1',DATABASE_URL:url.toString(),BETTER_AUTH_URL:origin,BETTER_AUTH_SECRET:randomBytes(32).toString('hex'),INKSPECT_ACCOUNT_ONBOARDING_ENABLED:'false',API_HOST:'127.0.0.1',PORT:'3003'};
+const env={PATH:process.env.PATH!,NODE_ENV:'production',INKSPECT_DEV_LOGS:'false',NEXT_TELEMETRY_DISABLED:'1',DATABASE_URL:url.toString(),BETTER_AUTH_URL:origin,BETTER_AUTH_SECRET:randomBytes(32).toString('hex'),INKSPECT_ACCOUNT_ONBOARDING_ENABLED:'false',API_HOST:'127.0.0.1',PORT:'3003',...(process.env.INKSPECT_SMOKE_INDEX==='1'?{AWS_BEARER_TOKEN_BEDROCK:'synthetic-index-model-token',AWS_REGION:'eu-west-2'}:{})};
 Object.assign(process.env,env);
 const children:ChildProcess[]=[];let childOutput='';
 function start(args:string[],cwd=process.cwd(),extra:Record<string,string>={}){const c=spawn(process.execPath,args,{cwd,env:{...env,...extra},stdio:['ignore','pipe','pipe']});children.push(c);c.stdout!.on('data',b=>{childOutput+=b.toString();});c.stderr!.on('data',b=>{childOutput+=b.toString();});return c;}
@@ -35,6 +36,12 @@ try{
  const cookie=verify.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');assert.ok(cookie);
  const server=start(['dist/server.mjs']);await ready(server,'http://127.0.0.1:3003/ready');
  const request=(path:string,body?:object)=>fetch('http://127.0.0.1:3003'+path,{headers:{cookie,origin,'content-type':'application/json'},...(body?{method:'POST',body:JSON.stringify(body)}:{})});
+ const reviewSettingsPath='/api/review-settings?organizationId='+org;
+ assert.deepEqual((await (await request(reviewSettingsPath)).json()).ignored_authors,[]);
+ const ignoredResponse=await request(reviewSettingsPath,{ignored_authors:['@Dependabot[bot]','dependabot[bot]']});assert.equal(ignoredResponse.status,200);
+ assert.deepEqual((await ignoredResponse.json()).ignored_authors,['dependabot[bot]']);
+ assert.equal((await request(reviewSettingsPath,{ignored_authors:['*']})).status,400);
+ assert.equal((await request('/api/review-settings?organizationId=another-workspace',{ignored_authors:[]})).status,409);
  const members='/api/members?organizationId='+org;
  const invite=await request(members,{action:'invite',email:'teammate@example.test',role:'member'});assert.equal(invite.status,200);const invitation=await invite.json();assert.ok(invitation.id);
  assert.equal((await request(members)).status,200);
@@ -42,6 +49,7 @@ try{
  assert.equal((await request('/api/usage?organizationId='+org)).status,200);
  assert.equal((await request('/api/members?organizationId=another-workspace')).status,409);
  for(const path of ['/api/billing','/api/internal/review-billing','/api/billing/webhook']){assert.equal((await request(path)).status,404);assert.equal((await request(path,{})).status,404);} const tables=(await pool.query('SELECT table_name FROM information_schema.tables WHERE table_schema=$1',[schema])).rows;assert.equal(tables.some(r=>/^(billing_|support_)/.test(r.table_name)),false);
+ const emptyIndex=process.env.INKSPECT_SMOKE_INDEX==='1'?await checkEmptyIndex({pool,org,userId:user.id,request,start}):undefined;
  const ui=process.env.INKSPECT_SMOKE_UI;
  if(ui){
   const listener=createServer().listen(0,'127.0.0.1');await once(listener,'listening');const port=(listener.address() as {port:number}).port;await new Promise<void>(r=>listener.close(()=>r()));
@@ -49,8 +57,10 @@ try{
   const web=start([require.resolve('next/dist/bin/next'),'start','--hostname','127.0.0.1','--port',String(port)],ui,{PORT:String(port)});
   const first=await ready(web,`http://127.0.0.1:${port}/login`);assert.match(await first.text(),/Welcome to Inkspect/);
   const page=await fetch(`http://127.0.0.1:${port}/dashboard?view=members`,{headers:{cookie}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Synthetic Owner/);assert.match(html,/owner@example.test/);
+  const settingsPage=await fetch(`http://127.0.0.1:${port}/dashboard?view=settings`,{headers:{cookie}});assert.equal(settingsPage.status,200);assert.match(await settingsPage.text(),/Ignored PR authors/);
+  const settingsProxy=await fetch(`http://127.0.0.1:${port}${reviewSettingsPath}`,{headers:{cookie}});assert.equal(settingsProxy.status,200);assert.deepEqual((await settingsProxy.json()).ignored_authors,['dependabot[bot]']);
   const proxy=await fetch(`http://127.0.0.1:${port}${members}`,{headers:{cookie}});assert.equal(proxy.status,200);
   const billing=await fetch(`http://127.0.0.1:${port}/dashboard?view=billing`,{headers:{cookie}});const view=await billing.text();assert.match(view,/>Dashboard</);assert.doesNotMatch(html,/Add seats|Seat plan|Add AI Credits/);for(const path of ['/api/billing','/api/billing/webhook'])assert.equal((await fetch(`http://127.0.0.1:${port}${path}`,{headers:{cookie}})).status,404);
  }
- console.log(JSON.stringify({edition:'self-hosted',migrations:'twice',auth:'passed',membership:'passed',usage:'passed',scope:'passed',http:'passed',ui:!!ui}));
+ console.log(JSON.stringify({edition:'self-hosted',migrations:'twice',auth:'passed',membership:'passed',usage:'passed',scope:'passed',http:'passed',ui:!!ui,emptyIndex}));
 }finally{await stop();await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);await pool.end();}

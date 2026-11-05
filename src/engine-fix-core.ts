@@ -9,7 +9,7 @@ import { requestIdentity } from "@inkspect/core/lib/review-identity";
 import type { FixPolicy } from "./engine-fix-policy";
 import type { EngineClaims } from "@inkspect/core/lib/engine-client";
 import { ReviewError } from "@inkspect/core/lib/review-access";
-import { automaticFix } from "./review-settings";
+import { automaticFix, ignoredAuthors, isIgnoredAuthor } from "./review-settings";
 import { runRust } from "./engine-process";
 import { CommitFailure, commitReceipt, commitRejectionMessage } from "./engine-fix-receipt";
 import { writeFile } from 'node:fs/promises';
@@ -45,6 +45,10 @@ export async function autoFixGuard(job: EngineJob) {
   const manager=(await database().query(`SELECT 1 FROM member WHERE "organizationId"=$1 AND "userId"=$2 AND regexp_split_to_array(trim(role),'\\s*,\\s*') && ARRAY['owner','admin']`,[job.organization_id,job.subject])).rowCount;
   if (!manager || !settings.auto_fix || String(settings.auto_fix_version)!==String(job.request.auto_fix_version) || settings.auto_fix_by!==job.subject)
     throw new ReviewError(403,'Automatic fixes are no longer enabled for this job.');
+}
+async function guardAutomaticFixAuthor(organization: string, pull: any) {
+  if (isIgnoredAuthor(pull.user?.login, await ignoredAuthors(organization)))
+    throw new ReviewError(403, 'The PR author is ignored in workspace settings.');
 }
 async function fixGitHub(worker: Worker, number: number, signal: AbortSignal) {
   try { return await PullGitHub.open(worker, number, signal, 'write'); }
@@ -144,6 +148,7 @@ async function admitFix(policy: FixPolicy, worker:Worker, claims:Claims, sourceI
   const gh = await fixGitHub(worker, body.number, signal);
   const pull = await gh.request(`${gh.root}/pulls/${body.number}`);
   const branch = validateFixPull(pull, worker, source);
+  if (automatic) await guardAutomaticFixAuthor(claims.tenant, pull);
   // Admission is idempotent and shares the review credit gate and settlement.
   // BYOK selection is bound to the reservation and checked again at execution.
   await policy.reserve(input, host);
@@ -208,12 +213,17 @@ export async function runFix(policy: FixPolicy, job: EngineJob, worker: Worker, 
   const source = await loadJob(worker, job.request.fix_of);
   if (!source || source.status !== 'completed' || source.snapshot.head !== job.snapshot.head) throw new Error('Source review unavailable');
   const gh = await fixGitHub(worker, job.request.number, signal);
-  validateFixPull(await gh.request(`${gh.root}/pulls/${job.request.number}`), worker, source, job.snapshot.fix_branch);
+  const guardPull = async () => {
+    const pull = await gh.request(`${gh.root}/pulls/${job.request.number}`);
+    validateFixPull(pull, worker, source, job.snapshot.fix_branch);
+    if (job.request.auto_fix_version !== undefined) await guardAutomaticFixAuthor(job.organization_id, pull);
+  };
+  await guardPull();
   const token = await repositoryToken(worker, signal, true);
   if(!job.request.byok && policy.managedFix) {
     try { return await policy.managedFix(job,worker,source,token,signal,async verification=>{
       await authorizeFix(jobClaims(job));await autoFixGuard(job);
-      validateFixPull(await gh.request(`${gh.root}/pulls/${job.request.number}`),worker,source,job.snapshot.fix_branch);
+      await guardPull();
       signal.throwIfAborted();const writeToken=await repositoryToken(worker,signal,'write');
       const intent=await database().query(`UPDATE api_engine_job SET snapshot=snapshot || $2::jsonb WHERE id=$1 AND NOT cancel_requested AND status='running' RETURNING id`,[job.id,{fix_publishing:true,fix_verification:verification,fix_engine:'claude_code'}]);
       if(!intent.rowCount)throw new Error('Fix cancelled');return writeToken;
@@ -236,7 +246,7 @@ export async function runFix(policy: FixPolicy, job: EngineJob, worker: Worker, 
   await authorizeFix(jobClaims(job));
   await autoFixGuard(job);
   await policy.revalidate(job);
-  validateFixPull(await gh.request(`${gh.root}/pulls/${job.request.number}`), worker, source, job.snapshot.fix_branch);
+  await guardPull();
   signal.throwIfAborted();
   const writeToken = await repositoryToken(worker, signal, 'write');
   // Persist send intent before the only external write. A crash remains

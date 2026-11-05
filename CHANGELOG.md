@@ -6,9 +6,17 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-05
+
+#### Added
+
+- Workspace PR author exclusions for automatic reviews, replies and fixes, with live rechecks, cancellation and resumption.
+
 ### 2026-11-04
 
 #### Added
+
+- Route instance AI requests through the Inkspect provider when selected at installation (2026-11-04).
 
 - Initial self-hosted API and shared review workers source snapshot with independent setup and automated checks.
 - MIT license, contribution and community guidelines, security/support policies,
@@ -21,3 +29,7 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
   `type(scope): short imperative description` (maximum 72 characters).
 - Included the approved MIT license and contribution documentation in packaged
   source artifacts; removed the provisional license marker.
+
+#### Fixed
+
+- Treat repositories without commits as an empty indexing result; preserve permission failures and allow retry after the first commit.

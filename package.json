@@ -125,6 +125,7 @@
     "./migrations/005_auto_fix.sql": "./migrations/005_auto_fix.sql",
     "./migrations/006_github_permissions.sql": "./migrations/006_github_permissions.sql",
     "./migrations/007_finding_resolutions.sql": "./migrations/007_finding_resolutions.sql",
+    "./migrations/008_ignored_pr_authors.sql": "./migrations/008_ignored_pr_authors.sql",
     "./migrations/self-hosted/000_chat_messages.sql": "./migrations/self-hosted/000_chat_messages.sql",
     "./migrations/self-hosted/001_membership.sql": "./migrations/self-hosted/001_membership.sql",
     "./migrations/self-hosted/002_chat_execution.sql": "./migrations/self-hosted/002_chat_execution.sql",
