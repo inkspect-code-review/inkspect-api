@@ -10,7 +10,12 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 #### Added
 
+- Publish an Inkspect check for each PR review, showing progress, critical findings and incomplete or failed reviews.
 - Workspace PR author exclusions for automatic reviews, replies and fixes, with live rechecks, cancellation and resumption.
+
+#### Fixed
+
+- Link continuing inline findings to their original open discussions from the PR summary across pushes and review reruns.
 
 ### 2026-11-04
 

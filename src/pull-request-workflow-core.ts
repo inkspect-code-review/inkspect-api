@@ -7,7 +7,9 @@ import { ReviewError } from "@inkspect/core/lib/review-access";
 import type { ReportResponse, ReviewJob } from "@inkspect/core/lib/review-types";
 import { database } from "./database";
 import { eligibility, enqueueIndex, lastIndexed, latestIndex, type Worker } from "./repository-store";
-import { PullGitHub, type Delivery } from "./pull-request-github";
+import { CheckUnavailable, PullGitHub, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
+import { overviewSeverity } from "@inkspect/core/lib/review-overview";
+import { originalThread, continuingSummary } from "./continuing-findings";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
 import { INVALID_IGNORE } from "./engine-contract";
 import { appLogin } from "./pull-request-events";
@@ -19,7 +21,7 @@ export type ReviewNote = { author: string; body: string };
 // notes: participant requests for the next admission, frozen while admitting.
 // published: the completed job whose report is already on the pull request.
 export type WorkflowState = { head?: string; base?: string; index?: string; job?: string; rerun?: string; stopped?: boolean;
-  eyes?: boolean; summary?: Delivery; findings?: Record<string, Delivery>; error?: string;
+  check?: ReviewCheck; eyes?: boolean; summary?: Delivery; findings?: Record<string, Delivery & { continued?: number }>; error?: string;
   notes?: ReviewNote[]; admitting?: boolean; published?: string };
 export type Workflow = { id: string; organization_id: string; repository_id: string; connection_id: string;
   installation_id: string; number: number; state: WorkflowState };
@@ -43,7 +45,21 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   const send = (path: string, method: 'GET' | 'POST' = 'GET', body?: object) => services.engineRequest(path, method, body, claims);
   const current = await github.snapshot();
   await guardBinding();
+  const reviewLink = (job?: string) => {
+    const link = new URL('/dashboard', process.env.BETTER_AUTH_URL || 'https://app.inkspect.si');
+    link.search = new URLSearchParams({ view: 'reviews', repositoryId: row.repository_id, ...(job ? { jobId: job } : {}) }).toString();
+    return link.href;
+  };
+  const syncCheck = async (check: ReviewCheck, phase: CheckPhase, validate: () => Promise<void>) => {
+    if (!github.checksEnabled || check.phase === phase) return;
+    await github.updateCheck(check, phase, reviewLink(check.job), validate);
+    await save();
+  };
+  const stopCheck = async () => {
+    if (s.check && (!s.check.phase || s.check.phase === 'in_progress')) await syncCheck(s.check, 'cancelled', guardBinding);
+  };
   if (isIgnoredAuthor(current.author, worker.ignored_authors)) {
+    await stopCheck();
     s.stopped = true; await save();
     for (const message of messages) {
       message.state.ignored = true; await saveMessage(message);
@@ -68,9 +84,8 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     s.summary ??= {};
     await github.deliver(s.summary, marker, body, 'issue', save, guard);
   };
-  const link = new URL('/dashboard', process.env.BETTER_AUTH_URL || 'https://app.inkspect.si');
-  link.search = new URLSearchParams({ view: 'reviews', repositoryId: row.repository_id, ...(s.job ? { jobId: s.job } : {}) }).toString();
   if (!current.open || current.draft) {
+    await stopCheck();
     s.stopped = true; await save();
     if (s.job) {
       const old = await send(`/jobs/${s.job}`) as ReviewJob;
@@ -86,6 +101,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     return null;
   }
   if (s.head !== current.head || s.base !== current.base) {
+    await stopCheck();
     if (!worker.automatic) return null;
     if (s.job) {
       const old = await send(`/jobs/${s.job}`) as ReviewJob;
@@ -102,6 +118,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   let job: ReviewJob | undefined = s.job ? await send(`/jobs/${s.job}`) : undefined;
   if (s.stopped && worker.automatic) {
     if (job && ['cancelled', 'failed'].includes(job.job.status)) {
+      await stopCheck();
       s.rerun = job.job.id; delete s.job; s.findings = {}; job = undefined;
     }
     delete s.stopped; await save();
@@ -145,6 +162,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
         continue;
       }
       if (job && terminal(job.job.status)) {
+        await stopCheck();
         s.rerun = job.job.id; delete s.job; s.findings = {}; delete s.notes; job = undefined;
       }
       if (note) s.notes = [...(s.notes ?? []), note];
@@ -215,6 +233,22 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   }
   if (!job) job = await send(`/jobs/${s.job}`);
   if (!job) throw new Error('Missing review job');
+  let retryCheck = false;
+  const reviewCheck = async (phase: CheckPhase) => {
+    if (!github.checksEnabled) return;
+    if (!s.job || job?.job.id !== s.job || s.head !== current.head || s.base !== current.base) throw new Error('Review check target mismatch');
+    if (s.check?.job !== s.job) {
+      s.check = { job: s.job, head: current.head };
+      await save();
+    }
+    try { await syncCheck(s.check, phase, guard); }
+    catch (error) {
+      if (!(error instanceof CheckUnavailable)) throw error;
+      // Comment delivery and settlement can proceed while the Checks API retries.
+      retryCheck = true;
+      console.error(JSON.stringify({ event: 'github.check_retry', workflow: row.id }));
+    }
+  };
   for (const message of messages) if (message.state.requested && !message.state.done && !message.state.ignored) {
     message.state.job = s.job; await saveMessage(message);
   }
@@ -227,30 +261,53 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     if (job.job.id !== s.job || job.snapshot.repository_id !== row.repository_id ||
         job.snapshot.head !== current.head || job.snapshot.base_tip !== current.base ||
         result.report.run.target.repository_id !== row.repository_id || result.report.run.target.revision_id !== current.head ||
-        result.report.run.id !== s.job || result.report.run.status !== 'completed' || result.report.run.freshness !== 'current') throw new Error('Report freshness not verified');
-    await publish(reportBody(result.report));
-    s.findings ??= {};
+        result.report.run.id !== s.job || result.report.run.status !== 'completed' || result.report.run.freshness !== 'current') {
+      if (job.job.id === s.job) await reviewCheck('incomplete');
+      throw new Error('Report freshness not verified');
+    }
+    const critical = result.report.findings.some(finding => overviewSeverity(finding.severity) === 'critical');
+    const complete = result.report.run.coverage_complete && !result.report.verification_gaps.some(gap => gap.blocking);
+    await reviewCheck(critical ? 'critical' : complete ? 'clean' : 'incomplete');
+    const report = reportBody(result.report);
+    const deliveries = s.findings ??= {};
     const lines = await github.changedLines();
-    for (const finding of result.report.findings) {
-      const line = finding.location.start_line;
-      // GitHub rejects comments outside a diff. Such findings remain fully
-      // visible in the main report instead of being attached to the wrong line.
-      if (!lines.get(finding.location.path)?.has(line)) continue;
-      const delivery = s.findings[finding.id] ??= {};
+    const inline = result.report.findings.filter(f => lines.get(f.location.path)?.has(f.location.start_line));
+    const pending = inline.filter(f => !deliveries[f.id]);
+    const threads = pending.length ? await github.findingThreads(row.id) : [];
+    const usedThreads = new Set(Object.values(deliveries).map(delivery => delivery.continued));
+    const continuing = [];
+    for (const finding of inline) {
+      if (!deliveries[finding.id]) {
+        const prior = originalThread(threads.filter(thread => !usedThreads.has(thread.id)), job.job.id, finding, findingBody(result.report, finding.id));
+        if (prior) usedThreads.add(prior.id);
+        deliveries[finding.id] = prior ? { continued: prior.id } : {};
+      }
+      const thread = deliveries[finding.id].continued;
+      if (thread) continuing.push({ title: finding.title, thread });
+    }
+    // Freeze the publication plan before the first write. Replaying this job
+    // must not create a new comment if someone subsequently resolves a thread.
+    if (pending.length) await save();
+    await publish(continuingSummary(report, continuing, `https://github.com/${worker.full_name}/pull/${row.number}`));
+    for (const finding of inline) {
+      const delivery = deliveries[finding.id];
+      if (delivery.continued) continue;
       await github.deliver(delivery, `<!-- inkspect:finding:${row.id}:${s.job}:${finding.id} -->`, findingBody(result.report, finding.id), 'inline', save, guard,
-        { commit_id: s.head, path: finding.location.path, line, side: 'RIGHT' });
+        { commit_id: s.head, path: finding.location.path, line: finding.location.start_line, side: 'RIGHT' });
     }
     s.published = s.job; await save();
     // One more pass completes acknowledgments and starts any waiting request.
-    return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : null;
+    return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : retryCheck ? 30_000 : null;
   }
   if (terminal(job.job.status)) {
+    await reviewCheck(job.job.status === 'cancelled' ? 'cancelled' : 'failed');
     // Rules come from the pull request's base, so the fix has to land there first.
     await publish(job.job.status === 'failed' && job.job.error_code === INVALID_IGNORE
       ? `## Inkspect · Review failed\n\nThe \`.inkspectignore\` file on the base branch is invalid, so the review did not run. Fix it on the base branch, update this pull request from that branch, then comment \`${reviewCommand}\`. See ${ignoreDocs}.`
-      : `## Inkspect · Review ${job.job.status === 'cancelled' ? 'cancelled' : 'failed'}\n\nThe review did not finish. Check the [review in Inkspect](${link.href}), then comment \`${reviewCommand}\` to retry.`);
-    return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : null;
+      : `## Inkspect · Review ${job.job.status === 'cancelled' ? 'cancelled' : 'failed'}\n\nThe review did not finish. Check the [review in Inkspect](${reviewLink(s.job)}), then comment \`${reviewCommand}\` to retry.`);
+    return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : retryCheck ? 30_000 : null;
   }
+  await reviewCheck('in_progress');
   await publish(`## Inkspect · ${job.job.status === 'paused' ? services.pausedLabel : job.job.status === 'queued' ? 'Review queued' : 'Review in progress'}\n\nReviewing commit \`${s.head}\`.\n\nThe final report will replace this message.`);
   return 10_000;
 }
@@ -293,7 +350,7 @@ export async function processPullRequest(signal: AbortSignal, services: Workflow
             worker.automatic = live.automatic;
             worker.ignored_authors = live.ignored_authors;
           };
-          const github = await PullGitHub.open(worker, row.number, AbortSignal.any([signal, abort.signal, AbortSignal.timeout(120_000)]));
+          const github = await PullGitHub.open(worker, row.number, AbortSignal.any([signal, abort.signal, AbortSignal.timeout(120_000)]), false, true);
           const messages = (await tx.query<Message>(`SELECT * FROM api_pull_request_message WHERE workflow_id=$1 AND NOT coalesce((state->>'done')::boolean,false) AND NOT coalesce((state->>'ignored')::boolean,false) ORDER BY created_at LIMIT 50`, [row.id])).rows;
           const saveMessage = async (m: Message) => { await tx.query('UPDATE api_pull_request_message SET state=$4 WHERE workflow_id=$1 AND kind=$2 AND comment_id=$3', [row.id, m.kind, m.comment_id, JSON.stringify(m.state)]); };
           delay = await advancePull(row, worker, github, save, guard, messages, saveMessage, services);
