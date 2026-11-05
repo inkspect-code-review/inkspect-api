@@ -3,6 +3,26 @@ import { organizationAccess } from "@inkspect/core/lib/organization-access";
 import { readReviewJSON, ReviewError, reviewJSON, reviewFailure } from "@inkspect/core/lib/review-access";
 import { database } from "./database";
 
+export const checkThresholds = ['P0', 'P1', 'P2', 'P3'] as const;
+export type CheckThreshold = typeof checkThresholds[number];
+
+function parseCheckThreshold(value: unknown): CheckThreshold {
+  const threshold = checkThresholds.find(level => level === value);
+  if (!threshold) throw new ReviewError(400, 'Choose a check threshold from P0 to P3.');
+  return threshold;
+}
+
+export async function checkThreshold(organization: string): Promise<CheckThreshold> {
+  const result = await database().query('SELECT check_threshold FROM api_review_settings WHERE organization_id=$1', [organization]);
+  return result.rows[0]?.check_threshold ?? 'P0';
+}
+
+export async function saveCheckThreshold(organization: string, user: string, threshold: CheckThreshold) {
+  await database().query(`INSERT INTO api_review_settings(organization_id,updated_by,check_threshold) VALUES($1,$2,$3)
+    ON CONFLICT(organization_id) DO UPDATE SET check_threshold=excluded.check_threshold,updated_by=excluded.updated_by,updated_at=clock_timestamp()`,
+    [organization, user, threshold]);
+}
+
 export function normalizeIgnoredAuthors(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 100) throw new ReviewError(400, 'Enter up to 100 GitHub usernames.');
   return [...new Set(value.map(entry => {
@@ -69,17 +89,18 @@ export async function saveAutomaticFix(organization: string, user: string, enabl
   } catch(error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
 }
 
-export async function reviewSettings(request: Request, auth: Auth, services = { automaticReviews, saveAutomaticReviews, automaticFix, saveAutomaticFix, ignoredAuthors, saveIgnoredAuthors }) {
+export async function reviewSettings(request: Request, auth: Auth, services = { automaticReviews, saveAutomaticReviews, automaticFix, saveAutomaticFix, ignoredAuthors, saveIgnoredAuthors, checkThreshold, saveCheckThreshold }) {
   try {
     const access = await organizationAccess(request, auth);
-    const response = async () => reviewJSON({ automatic: await services.automaticReviews(access.organizationId), auto_fix: (await services.automaticFix(access.organizationId)).auto_fix, ignored_authors: await services.ignoredAuthors(access.organizationId), can_manage: access.canManage });
+    const response = async () => reviewJSON({ automatic: await services.automaticReviews(access.organizationId), auto_fix: (await services.automaticFix(access.organizationId)).auto_fix, ignored_authors: await services.ignoredAuthors(access.organizationId), check_threshold: await services.checkThreshold(access.organizationId), can_manage: access.canManage });
     if (request.method === 'GET') return await response();
     if (request.method !== 'POST') throw new ReviewError(405, 'Method not allowed.');
     if (!access.canManage) throw new ReviewError(403, 'Only workspace owners and admins can change review automation.');
     const body = await readReviewJSON(request);
     const keys = Object.keys(body);
-    if (keys.length !== 1 || !['automatic','auto_fix','ignored_authors'].includes(keys[0])) throw new ReviewError(400, 'Choose one review automation setting to update.');
+    if (keys.length !== 1 || !['automatic','auto_fix','ignored_authors','check_threshold'].includes(keys[0])) throw new ReviewError(400, 'Choose one review automation setting to update.');
     if (keys[0] === 'ignored_authors') await services.saveIgnoredAuthors(access.organizationId, access.user.id, normalizeIgnoredAuthors(body.ignored_authors));
+    else if (keys[0] === 'check_threshold') await services.saveCheckThreshold(access.organizationId, access.user.id, parseCheckThreshold(body.check_threshold));
     else {
       if (typeof body[keys[0]] !== 'boolean') throw new ReviewError(400, 'Choose whether the review automation setting is enabled.');
       if (keys[0] === 'auto_fix') await services.saveAutomaticFix(access.organizationId, access.user.id, body.auto_fix as boolean);

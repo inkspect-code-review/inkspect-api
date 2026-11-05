@@ -1,17 +1,17 @@
 import { repositoryAccess } from "./metadata";
 import type { Worker } from "./repository-store";
 
+import type { CheckThreshold } from "./review-settings";
+
 export class GitHubFailure extends Error {
   constructor(public status: number) { super(`github_${status}`); }
 }
 export type Delivery = { id?: number; sending?: boolean; body?: string };
 export class CheckUnavailable extends Error {}
-export type ReviewCheck = { job: string; head: string; id?: number; phase?: CheckPhase };
-export type CheckPhase = 'in_progress' | 'clean' | 'critical' | 'incomplete' | 'failed' | 'cancelled';
+export type ReviewCheck = { job: string; head: string; id?: number; threshold?: CheckThreshold; phase?: CheckPhase | 'critical' };
+export type CheckPhase = 'in_progress' | 'clean' | 'blocking' | 'incomplete' | 'failed' | 'cancelled';
 const checkOutputs = {
   in_progress: ['Review in progress', 'Inkspect is reviewing this commit.'],
-  clean: ['No critical findings', 'Review completed without critical findings.'],
-  critical: ['Critical findings', 'Review the critical findings in the Inkspect report.'],
   incomplete: ['Review incomplete', 'Inkspect could not verify a complete review of this commit.'],
   failed: ['Review failed', 'The review could not finish.'],
   cancelled: ['Review cancelled', 'Review of this revision stopped.'],
@@ -61,8 +61,12 @@ export class PullGitHub {
       catch (error) { throw new CheckUnavailable('GitHub check unavailable', { cause: error }); }
     };
     const name = 'Inkspect';
-    const [title, summary] = checkOutputs[phase];
-    const conclusions = { clean: 'success', critical: 'failure', incomplete: 'action_required', failed: 'failure', cancelled: 'cancelled' };
+    const threshold = check.threshold ?? 'P0';
+    const range = threshold === 'P0' ? 'P0' : `P0–${threshold}`;
+    const [title, summary] = phase === 'blocking' ? ['Blocking findings', `The review found issues in the blocking range (${range}).`]
+      : phase === 'clean' ? ['No blocking findings', `Review completed with no findings in the blocking range (${range}).`]
+      : checkOutputs[phase];
+    const conclusions = { clean: 'success', blocking: 'failure', incomplete: 'action_required', failed: 'failure', cancelled: 'cancelled' };
     const body = { details_url: details, output: { title, summary },
       ...(phase === 'in_progress' ? { status: 'in_progress' } : { status: 'completed', conclusion: conclusions[phase] }) };
     if (!check.id) {

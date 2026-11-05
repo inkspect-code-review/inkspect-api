@@ -110,6 +110,10 @@ test('check delivery recovers a lost create receipt and updates the app-owned ch
   assert.equal(writes[0].body.head_sha, check.head);
   assert.equal(check.id, 42);
   assert.equal(check.phase, 'clean');
+  check.threshold = 'P2';
+  await github.updateCheck(check, 'blocking', 'https://example.org', guard);
+  assert.equal(writes.at(-1)?.body.conclusion, 'failure');
+  assert.match((writes.at(-1)?.body.output as { summary: string }).summary, /P0–P2/);
 });
 
 test('thread lookup selects the earliest open current-line finding by this app on this PR', async t => {

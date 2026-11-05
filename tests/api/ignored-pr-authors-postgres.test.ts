@@ -13,7 +13,7 @@ test('author settings migrate idempotently, persist per workspace and recheck du
   const pool=new Pool({connectionString:process.env.INKSPECT_DEPLOY_TEST_DATABASE_URL,options:`-c search_path=${schema}`});
   try {
     await pool.query(`CREATE SCHEMA "${schema}"`);
-    for(const name of ['001_repository_api.sql','002_pull_request_workflows.sql','008_ignored_pr_authors.sql','008_ignored_pr_authors.sql'])
+    for(const name of ['001_repository_api.sql','002_pull_request_workflows.sql','008_ignored_pr_authors.sql','008_ignored_pr_authors.sql', '009_check_threshold.sql'])
       await pool.query(await readFile(new URL(`../../migrations/${name}`,import.meta.url),'utf8'));
     pools.set('app',pool);
     await pool.query(`CREATE TABLE "githubConnection"(id text,"organizationId" text,"installationId" text,repositories jsonb);

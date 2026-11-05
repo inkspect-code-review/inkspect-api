@@ -18,6 +18,8 @@ Source code is licensed under [MIT](LICENSE). Third-party dependencies retain th
 
 ## Ignored pull request authors
 
+Workspace owners and admins can set `check_threshold` to P0 (default), P1, P2 or P3 through `/api/review-settings`. New GitHub checks fail on findings at or above the selected severity.
+
 Workspace owners and admins can manage `ignored_authors` through `/api/review-settings`.
 The list defaults to empty and uses exact, case-insensitive GitHub logins, including
 the `[bot]` suffix for app accounts. Ignored PRs skip automatic reviews, GitHub

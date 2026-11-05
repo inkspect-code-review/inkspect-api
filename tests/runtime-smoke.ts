@@ -38,6 +38,10 @@ try{
  const request=(path:string,body?:object)=>fetch('http://127.0.0.1:3003'+path,{headers:{cookie,origin,'content-type':'application/json'},...(body?{method:'POST',body:JSON.stringify(body)}:{})});
  const reviewSettingsPath='/api/review-settings?organizationId='+org;
  assert.deepEqual((await (await request(reviewSettingsPath)).json()).ignored_authors,[]);
+ assert.equal((await (await request(reviewSettingsPath)).json()).check_threshold,'P0');
+ const thresholdResponse=await request(reviewSettingsPath,{check_threshold:'P2'});
+ assert.equal(thresholdResponse.status,200);assert.equal((await thresholdResponse.json()).check_threshold,'P2');
+ assert.equal((await (await request(reviewSettingsPath)).json()).check_threshold,'P2');
  const ignoredResponse=await request(reviewSettingsPath,{ignored_authors:['@Dependabot[bot]','dependabot[bot]']});assert.equal(ignoredResponse.status,200);
  assert.deepEqual((await ignoredResponse.json()).ignored_authors,['dependabot[bot]']);
  assert.equal((await request(reviewSettingsPath,{ignored_authors:['*']})).status,400);
@@ -57,7 +61,7 @@ try{
   const web=start([require.resolve('next/dist/bin/next'),'start','--hostname','127.0.0.1','--port',String(port)],ui,{PORT:String(port)});
   const first=await ready(web,`http://127.0.0.1:${port}/login`);assert.match(await first.text(),/Welcome to Inkspect/);
   const page=await fetch(`http://127.0.0.1:${port}/dashboard?view=members`,{headers:{cookie}});assert.equal(page.status,200);const html=await page.text();assert.match(html,/Synthetic Owner/);assert.match(html,/owner@example.test/);
-  const settingsPage=await fetch(`http://127.0.0.1:${port}/dashboard?view=settings`,{headers:{cookie}});assert.equal(settingsPage.status,200);assert.match(await settingsPage.text(),/Ignored PR authors/);
+  const settingsPage=await fetch(`http://127.0.0.1:${port}/dashboard?view=settings`,{headers:{cookie}});assert.equal(settingsPage.status,200);const settingsHtml=await settingsPage.text();assert.match(settingsHtml,/Ignored PR authors/);assert.match(settingsHtml,/GitHub check failure threshold/);
   const settingsProxy=await fetch(`http://127.0.0.1:${port}${reviewSettingsPath}`,{headers:{cookie}});assert.equal(settingsProxy.status,200);assert.deepEqual((await settingsProxy.json()).ignored_authors,['dependabot[bot]']);
   const proxy=await fetch(`http://127.0.0.1:${port}${members}`,{headers:{cookie}});assert.equal(proxy.status,200);
   const billing=await fetch(`http://127.0.0.1:${port}/dashboard?view=billing`,{headers:{cookie}});const view=await billing.text();assert.match(view,/>Dashboard</);assert.doesNotMatch(html,/Add seats|Seat plan|Add AI Credits/);for(const path of ['/api/billing','/api/billing/webhook'])assert.equal((await fetch(`http://127.0.0.1:${port}${path}`,{headers:{cookie}})).status,404);

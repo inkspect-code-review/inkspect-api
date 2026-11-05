@@ -8,12 +8,12 @@ import type { ReportResponse, ReviewJob } from "@inkspect/core/lib/review-types"
 import { database } from "./database";
 import { eligibility, enqueueIndex, lastIndexed, latestIndex, type Worker } from "./repository-store";
 import { CheckUnavailable, PullGitHub, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
-import { overviewSeverity } from "@inkspect/core/lib/review-overview";
+import { overviewSeverity, overviewSeverities } from "@inkspect/core/lib/review-overview";
 import { originalThread, continuingSummary } from "./continuing-findings";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
 import { INVALID_IGNORE } from "./engine-contract";
 import { appLogin } from "./pull-request-events";
-import { isIgnoredAuthor } from "./review-settings";
+import { isIgnoredAuthor, checkThresholds, type CheckThreshold } from "./review-settings";
 
 const ignoreDocs = '[how `.inkspectignore` works](https://inkspect.si/inkspectignore)';
 
@@ -25,7 +25,7 @@ export type WorkflowState = { head?: string; base?: string; index?: string; job?
   notes?: ReviewNote[]; admitting?: boolean; published?: string };
 export type Workflow = { id: string; organization_id: string; repository_id: string; connection_id: string;
   installation_id: string; number: number; state: WorkflowState };
-type Binding = Worker & { subject: string; automatic: boolean; ignored_authors?: string[] };
+type Binding = Worker & { subject: string; automatic: boolean; check_threshold?: CheckThreshold; ignored_authors?: string[] };
 type Message = { comment_id: string; kind: 'issue' | 'inline'; sender: string; intent: 'review' | 'explain'; reply_to: string | null;
   note?: string | null; state: { ignored?: boolean; eyes?: boolean; requested?: boolean; job?: string; done?: boolean; delivery?: Delivery } };
 const terminal = (status: string) => ['completed', 'failed', 'cancelled'].includes(status);
@@ -233,12 +233,15 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   }
   if (!job) job = await send(`/jobs/${s.job}`);
   if (!job) throw new Error('Missing review job');
+  // Each check keeps its original policy across polling, retries and later settings edits.
+  // Receipts from before configurable thresholds used P0.
+  const threshold = s.check && s.check.job === s.job ? s.check.threshold ?? 'P0' : worker.check_threshold ?? 'P0';
   let retryCheck = false;
   const reviewCheck = async (phase: CheckPhase) => {
     if (!github.checksEnabled) return;
     if (!s.job || job?.job.id !== s.job || s.head !== current.head || s.base !== current.base) throw new Error('Review check target mismatch');
     if (s.check?.job !== s.job) {
-      s.check = { job: s.job, head: current.head };
+      s.check = { job: s.job, head: current.head, threshold };
       await save();
     }
     try { await syncCheck(s.check, phase, guard); }
@@ -265,9 +268,10 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
       if (job.job.id === s.job) await reviewCheck('incomplete');
       throw new Error('Report freshness not verified');
     }
-    const critical = result.report.findings.some(finding => overviewSeverity(finding.severity) === 'critical');
+    const cutoff = checkThresholds.indexOf(threshold);
+    const blocking = result.report.findings.some(finding => overviewSeverities.indexOf(overviewSeverity(finding.severity)) <= cutoff);
     const complete = result.report.run.coverage_complete && !result.report.verification_gaps.some(gap => gap.blocking);
-    await reviewCheck(critical ? 'critical' : complete ? 'clean' : 'incomplete');
+    await reviewCheck(blocking ? 'blocking' : complete ? 'clean' : 'incomplete');
     const report = reportBody(result.report);
     const deliveries = s.findings ??= {};
     const lines = await github.changedLines();
@@ -313,7 +317,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
 }
 
 async function bindingFor(tx: PoolClient, row: Workflow): Promise<Binding | undefined> {
-  return (await tx.query<Binding>(`SELECT w.*,m."userId" AS subject,coalesce(s.automatic,true) AS automatic,coalesce(s.ignored_authors,'{}'::text[]) AS ignored_authors
+  return (await tx.query<Binding>(`SELECT w.*,m."userId" AS subject,coalesce(s.automatic,true) AS automatic,coalesce(s.check_threshold,'P0') AS check_threshold,coalesce(s.ignored_authors,'{}'::text[]) AS ignored_authors
     FROM api_repository_worker w JOIN "githubConnection" c ON c.id=w.connection_id AND c."organizationId"=w.organization_id AND c."installationId"=w.installation_id::text
     JOIN "githubRepositoryClaim" claim ON claim."organizationId"=w.organization_id AND claim."repositoryId"=w.repository_id
     JOIN member m ON m."organizationId"=w.organization_id AND m."userId"=claim."accountId"
@@ -348,6 +352,7 @@ export async function processPullRequest(signal: AbortSignal, services: Workflow
             const live = await bindingFor(tx, row);
             if (!live || live.subject !== worker.subject) throw new Error('Repository connection changed');
             worker.automatic = live.automatic;
+            worker.check_threshold = live.check_threshold;
             worker.ignored_authors = live.ignored_authors;
           };
           const github = await PullGitHub.open(worker, row.number, AbortSignal.any([signal, abort.signal, AbortSignal.timeout(120_000)]), false, true);

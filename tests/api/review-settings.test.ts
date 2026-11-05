@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Auth } from "@inkspect/core/lib/github";
-import { reviewSettings, normalizeIgnoredAuthors, isIgnoredAuthor } from "../../src/review-settings";
+import { reviewSettings, normalizeIgnoredAuthors, isIgnoredAuthor, type CheckThreshold } from "../../src/review-settings";
 test('automatic review settings require workspace membership, owner/admin, same origin and a boolean', async () => {
   let role = 'member', signedIn = true, enabled = true, autoFix = false, saves = 0;
   const auth = { options: { baseURL: 'http://localhost:3002' }, api: { getSession: async () => signedIn ? { user: { id: 'user' }, session: { activeOrganizationId: 'org' } } : null }, $context: Promise.resolve({ adapter: { findOne: async () => role ? { role } : null } }) } as unknown as Auth;
   let authors: string[] = [];
-  const services = { ignoredAuthors: async () => authors, saveIgnoredAuthors: async (org:string,user:string,value:string[]) => { assert.equal(org,'org'); assert.equal(user,'user'); authors=value; }, automaticFix: async () => ({auto_fix:autoFix}), saveAutomaticFix: async (_org:string,_user:string,value:boolean) => { autoFix=value; }, automaticReviews: async () => enabled, saveAutomaticReviews: async (org: string, user: string, value: boolean) => { assert.equal(org, 'org'); assert.equal(user, 'user'); saves++; enabled = value; } };
+  let threshold: CheckThreshold = 'P0';
+  const services = { checkThreshold: async () => threshold, saveCheckThreshold: async (org: string, user: string, value: CheckThreshold) => {
+    assert.equal(org, 'org'); assert.equal(user, 'user'); threshold = value;
+  }, ignoredAuthors: async () => authors, saveIgnoredAuthors: async (org:string,user:string,value:string[]) => { assert.equal(org,'org'); assert.equal(user,'user'); authors=value; }, automaticFix: async () => ({auto_fix:autoFix}), saveAutomaticFix: async (_org:string,_user:string,value:boolean) => { autoFix=value; }, automaticReviews: async () => enabled, saveAutomaticReviews: async (org: string, user: string, value: boolean) => { assert.equal(org, 'org'); assert.equal(user, 'user'); saves++; enabled = value; } };
   const request = (method = 'GET', value: unknown = false, origin = 'http://localhost:3002', org = 'org') => new Request(`http://localhost:3002/api/review-settings?organizationId=${org}`, { method, headers: { origin, 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify({ automatic: value }) } : {}) });
   assert.equal((await (await reviewSettings(request(), auth, services)).json()).automatic, true);
   assert.equal((await reviewSettings(request('POST'), auth, services)).status, 403);
@@ -39,6 +42,18 @@ test('automatic review settings require workspace membership, owner/admin, same 
   assert.equal(enabled,false); assert.equal(autoFix,false);
   assert.equal((await reviewSettings(listRequest({ignored_authors:[]}),auth,services)).status,200);
   assert.deepEqual(authors,[]);
+  assert.equal((await (await reviewSettings(request(),auth,services)).json()).check_threshold, 'P0');
+  role = 'member';
+  assert.equal((await reviewSettings(listRequest({check_threshold:'P1'}),auth,services)).status,403);
+  role = 'admin';
+  for (const invalid of ['P4', 'p1', 1, null, ['P1']]) {
+    assert.equal((await reviewSettings(listRequest({check_threshold:invalid}),auth,services)).status,400);
+  }
+  for (const value of ['P1', 'P2', 'P3', 'P0']) {
+    const res = await reviewSettings(listRequest({check_threshold:value}),auth,services);
+    assert.equal(res.status,200);
+    assert.equal((await res.json()).check_threshold,value);
+  }
   signedIn = false; assert.equal((await reviewSettings(request(), auth, services)).status, 401);
 });
 
