@@ -6,6 +6,14 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-07
+
+#### Added
+
+- Let edition policies run background work within the engine's existing active
+  generation, capacity and graceful drain lifecycle. Standby, draining and busy
+  workers do not start that work; in-flight operations remain counted until done.
+
 ### 2026-11-05
 
 #### Added

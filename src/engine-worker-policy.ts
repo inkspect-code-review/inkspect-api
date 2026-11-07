@@ -6,6 +6,8 @@ import type { ProviderCredential } from "./engine-credentials";
 import type { HostConfig } from "./engine-contract";
 
 export interface EngineWorkerPolicy {
+  /** Optional edition work, sharing the active generation's capacity and drain lifecycle. */
+  background?: () => Promise<void>;
   http: EngineHttpPolicy;
   fix: FixPolicy;
   allowed(job: EngineJob): Promise<{ allowed: boolean }>;

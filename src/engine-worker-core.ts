@@ -1,4 +1,5 @@
 import { enqueueAutomaticFixes } from "./engine-auto-fix-core";
+import { scheduleBackgroundWork } from "./engine-background";
 import { isFix, runFix, handleFix } from "./engine-fix-core";
 import type { EngineWorkerPolicy } from "./engine-worker-policy";
 import { engineDiagnostic } from "./engine-diagnostics";
@@ -252,6 +253,7 @@ while (!stopping || active) {
     if (!draining && runtime.generation === generation && active < 2) {
       const job = (await database().query<EngineJob>("SELECT j.* FROM api_engine_job j WHERE j.status='queued' AND NOT j.cancel_requested AND NOT EXISTS(SELECT 1 FROM api_engine_job a WHERE a.organization_id=j.organization_id AND a.repository_id=j.repository_id AND a.status IN ('running','paused')) AND (NOT(j.request ? 'fix_of') OR j.request ? 'byok' OR NOT EXISTS(SELECT 1 FROM api_engine_job f WHERE f.status IN ('running','paused') AND f.request ? 'fix_of' AND NOT(f.request ? 'byok'))) ORDER BY j.created_at LIMIT 1")).rows[0];
       if (job) void track(() => runReview(job)).catch(() => {});
+      scheduleBackgroundWork({ generation, activeGeneration: runtime.generation, draining, active }, policy.background, track);
       if (!runtime.legacy_draining && active < 2) {
         const workers = (await database().query<Worker>('SELECT * FROM api_repository_worker ORDER BY metadata_due_at')).rows;
         const start = workers.length ? indexCursor % workers.length : 0;
