@@ -6,6 +6,12 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-15
+
+#### Changed
+
+- Refresh shared authentication to remember the last completed sign-in method.
+
 ### 2026-11-07
 
 #### Added
