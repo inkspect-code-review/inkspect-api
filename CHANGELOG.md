@@ -14,6 +14,7 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 #### Changed
 
+- Upgrade Next.js and eslint-config-next to 16.4.6.
 - Refresh shared review history to include stored open finding counts and severity indicators.
 - Refresh the shared review-model catalog used by provider validation and credential handling.
 
