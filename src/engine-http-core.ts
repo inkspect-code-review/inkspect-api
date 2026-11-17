@@ -35,8 +35,10 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
       const fixMatch = /^\/jobs\/(J-[a-f0-9]{32})\/fix$/.exec(url.pathname);
       if (fixMatch && ['GET', 'POST'].includes(req.method || '')) {
         if (req.method === 'POST' && (body === null || Array.isArray(body) || typeof body !== 'object'
-          || Object.keys(body).some(k => k !== 'retry_of') || (body.retry_of !== undefined && typeof body.retry_of !== 'string'))) throw new ReviewError(400,'Invalid fix request.');
-        const state = await policy.fix(worker, claims, fixMatch[1], req.method!, host, signal, req.method === 'POST' ? body.retry_of : undefined);
+          || (!policy.fixWithOptions && Object.keys(body).some(k => k !== 'retry_of')) || (body.retry_of !== undefined && typeof body.retry_of !== 'string'))) throw new ReviewError(400,'Invalid fix request.');
+        const state = policy.fixWithOptions
+          ? await policy.fixWithOptions(worker, claims, fixMatch[1], req.method!, host, signal, req.method === 'POST' ? body : {})
+          : await policy.fix(worker, claims, fixMatch[1], req.method!, host, signal, req.method === 'POST' ? body.retry_of : undefined);
         if (req.method === 'GET' && url.searchParams.get('check_pull') === '1') {
           const open = await policy.fixPullOpen(worker, fixMatch[1], signal);
           return json({ ...state, available: open && state.available, pr_open: open });

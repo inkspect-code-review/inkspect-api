@@ -6,6 +6,17 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-17
+
+#### Added
+
+- Allow applications to extend fix request validation and present execution-specific diagnostics without changing default admission rules.
+
+#### Changed
+
+- Refresh shared review history to include stored open finding counts and severity indicators.
+- Refresh the shared review-model catalog used by provider validation and credential handling.
+
 ### 2026-11-15
 
 #### Changed

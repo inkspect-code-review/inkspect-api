@@ -127,8 +127,8 @@ async function admitFix(policy: FixPolicy, worker:Worker, claims:Claims, sourceI
     [claims.tenant,worker.repository_id,claims.connection,claims.installation,sourceId])).rows[0];
   if (read) {
     try { await authorizeFix(claims); await policy.provider(claims); }
-    catch (error) { if (!(error instanceof ReviewError)) throw error; return { available: false, reason: error.message, fix: fixStatus(existing) }; }
-    return { available: true, reason: !existing ? source.snapshot.auto_fix_outcome?.reason : undefined, billing_mode: (await policy.provider(claims)) ? "byok" : policy.managedMode, fix: fixStatus(existing) };
+    catch (error) { if (!(error instanceof ReviewError)) throw error; return { available: false, reason: error.message, fix: (policy.status ?? fixStatus)(existing) }; }
+    return { available: true, reason: !existing ? source.snapshot.auto_fix_outcome?.reason : undefined, billing_mode: (await policy.provider(claims)) ? "byok" : policy.managedMode, fix: (policy.status ?? fixStatus)(existing) };
   }
   await authorizeFix(claims);
   if (retryOf) {
@@ -136,10 +136,10 @@ async function admitFix(policy: FixPolicy, worker:Worker, claims:Claims, sourceI
     // review. Duplicate/replayed requests return the same paid operation.
     const replay = (await database().query<EngineJob>(`SELECT * FROM api_engine_job WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4 AND request->>'fix_of'=$5 AND request->>'retry_of'=$6 LIMIT 1`,
       [claims.tenant,worker.repository_id,claims.connection,claims.installation,sourceId,retryOf])).rows[0];
-    if (replay) return {available:true,fix:fixStatus(replay)};
+    if (replay) return {available:true,fix:(policy.status ?? fixStatus)(replay)};
     if (!existing || existing.id !== retryOf || !canRetryFix(existing)) throw new ReviewError(409,'This fix cannot be retried safely. Check its latest status.');
     body.retry_of = retryOf;
-  } else if (existing) return { available: true, fix: fixStatus(existing) };
+  } else if (existing) return { available: true, fix: (policy.status ?? fixStatus)(existing) };
   const selection=await policy.provider(claims);
   if (selection) body.byok=selection;
   if (automatic) {body.auto_fix_version=automatic.version; await autoFixGuard({organization_id:claims.tenant,subject:claims.subject,request:body} as EngineJob);}
@@ -162,7 +162,7 @@ async function admitFix(policy: FixPolicy, worker:Worker, claims:Claims, sourceI
     await policy.attach(input, id, tx);
     await tx.query('COMMIT');
   } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
-  return { available:true, fix:fixStatus((await loadJob(worker, id))!) };
+  return { available:true, fix:(policy.status ?? fixStatus)((await loadJob(worker, id))!) };
 }
 
 export function validateRepair(value: any, job: EngineJob): { path: string; content: string }[] {

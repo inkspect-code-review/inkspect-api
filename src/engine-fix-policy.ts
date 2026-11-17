@@ -9,6 +9,8 @@ import type { ProviderCredential } from "./engine-credentials";
 
 export interface FixPolicy {
   managedMode: string;
+  /** Optional presentation of an edition-owned execution diagnostic. */
+  status?: (job?: EngineJob) => ReturnType<typeof import('./engine-fix-core').fixStatus>;
   commitCoAuthor?: string;
   provider(claims: EngineScope): Promise<ByokSelection | null>;
   reserve(input: ReviewIdentityInput & { repositoryName?: string }, host: HostConfig): Promise<unknown>;
