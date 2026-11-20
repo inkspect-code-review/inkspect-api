@@ -40,6 +40,10 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
           ? await policy.fixWithOptions(worker, claims, fixMatch[1], req.method!, host, signal, req.method === 'POST' ? body : {})
           : await policy.fix(worker, claims, fixMatch[1], req.method!, host, signal, req.method === 'POST' ? body.retry_of : undefined);
         if (req.method === 'GET' && url.searchParams.get('check_pull') === '1') {
+          if (policy.fixPullState) {
+            const readiness = await policy.fixPullState(worker, fixMatch[1], signal);
+            return json({ ...state, ...readiness, available: readiness.pr_ready && state.available });
+          }
           const open = await policy.fixPullOpen(worker, fixMatch[1], signal);
           return json({ ...state, available: open && state.available, pr_open: open });
         }

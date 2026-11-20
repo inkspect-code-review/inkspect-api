@@ -6,7 +6,23 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-19
+
+#### Added
+
+- Allow host applications to supply a review/fix executor and an authenticated loopback model transport without forwarding upstream credentials to the engine. Default and customer-key execution remain unchanged.
+
 ### 2026-11-17
+
+#### Fixed
+
+- Report excluded authors, disabled automation, drafts and unscheduled reviews instead of implying that a review will start.
+
+- Allow fixes when only the target branch advances; link changed PR heads to their latest scoped review.
+
+- Disable fix readiness when the reviewed head or target branch differs from the live PR.
+
+- Distinguish closed, draft, changed-commit and changed-target-branch reasons when an auto-fix cannot start.
 
 #### Added
 

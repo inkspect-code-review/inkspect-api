@@ -106,7 +106,7 @@ async function runReview(job: EngineJob) {
     const token = isFix(job) ? '' : await repositoryToken(worker, controller.signal, true, true);
     const [owner, repo] = worker.full_name.split('/');
     const credential = !isFix(job) ? await policy.credential(job) : undefined;
-    const result = isFix(job) ? await runFix(policy.fix, job, worker, controller.signal) : await runRust('review', job.host_config, { run_id: job.id, tenant_id: job.organization_id, repository_id: job.repository_id,
+    const result = isFix(job) ? await runFix(policy.fix, job, worker, controller.signal) : await (policy.runRust ?? runRust)('review', job.host_config, { run_id: job.id, tenant_id: job.organization_id, repository_id: job.repository_id,
       owner, repo, pull_number: job.request.number, base_sha: job.snapshot.base, head_sha: job.snapshot.head,
       review_notes: job.request.review_notes || [], auto_review: false, publish_inline_comments: false }, {}, token, job.id, controller.signal, credential);
     await authorizedWorker(jobClaims(job));
@@ -200,7 +200,7 @@ async function runIndex(worker: Worker) {
     let progress = indexStage(mergeIndexProgress(row.progress, indexed), 'summarizing', 'Index saved. Generating the repository description.');
     await lock.query(`UPDATE ${table} SET progress=$4,updated_at=now() WHERE tenant_id=$1 AND repository_id=$2 AND id=$3 AND status='running'`, [worker.organization_id, worker.repository_id, row.id, progress]);
     await authorizedWorker(claims);
-    const description = await describeRepository(worker.full_name, sources);
+    const description = await describeRepository(worker.full_name, sources, policy.modelFetcher);
     if (abort.signal.aborted) throw new Error('Index cancelled');
     progress.summary = description.summary;
     progress = indexStage(progress, 'completed', `Index ready: ${progress.chunks} chunks saved.`);

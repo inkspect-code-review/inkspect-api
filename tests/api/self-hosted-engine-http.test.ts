@@ -23,10 +23,11 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
   const secret = 'synthetic-engine-test-key-'.repeat(2);
   process.env.INKSPECT_ENGINE_SECRET = secret;
   pools.set('app', pool);
-  let retrievals = 0, measurements = 0;
+  let retrievals = 0, measurements = 0, pullChecks = 0;
   const host = { model_id: 'operator-model', budget_nano_usd: 1000 } as HostConfig;
   const policy = selfHostedEnginePolicy(pool, {
-    fix: async () => { throw new Error('Fix is outside this gateway test'); },
+    fix: async () => ({ available: true, fix: null }),
+    fixPullState: async () => { pullChecks++; return { pr_open: true, pr_ready: false, review_stale: true, review_reason: 'Review the latest version.' }; },
     fixPullOpen: async () => { throw new Error('Fix is outside this gateway test'); },
     retrieval: async () => { measurements++; },
   });
@@ -80,6 +81,11 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
     const access = { organizationId: 'tenant', userId: 'person', member: { role: 'owner' }, connections: [] } as Parameters<ReviewLifecycle['start']>[0];
     const jobs = await Promise.all([lifecycle.start(access, body, claims, send), lifecycle.start(access, body, claims, send)]);
     assert.equal(jobs[0].job.id, jobs[1].job.id);
+    const stale = await send(`/jobs/${jobs[0].job.id}/fix?check_pull=1`, 'GET', undefined, claims);
+    assert.equal(stale.available, false); assert.equal(stale.pr_open, true); assert.equal(stale.review_stale, true);
+    assert.equal(stale.review_reason, 'Review the latest version.');
+    await send(`/jobs/${jobs[0].job.id}/fix`, 'GET', undefined, claims);
+    assert.equal(pullChecks, 1, 'progress polling must not read live PR state');
     assert.equal(jobs[0].snapshot.title, 'Update dependencies');
     await pool.query("UPDATE api_engine_job SET snapshot=snapshot-'title' WHERE id=$1", [jobs[0].job.id]);
     const resolved = await send('/github/pulls/3/title', 'GET', undefined, claims);

@@ -14,6 +14,7 @@ export interface EngineHttpPolicy {
   retrieval(events: any[], host: HostConfig, scope: RetrievalScope): Promise<void>;
   fix(worker: Worker, claims: EngineScope, sourceId: string, method: string, host: HostConfig, signal: AbortSignal, retryOf?: string): Promise<{ available: boolean; [key: string]: unknown }>;
   fixPullOpen(worker: Worker, sourceId: string, signal: AbortSignal): Promise<boolean>;
+  fixPullState?: (worker: Worker, sourceId: string, signal: AbortSignal) => Promise<{ pr_open: boolean; pr_ready: boolean; review_stale: boolean; review_reason?: string; review_blocker?: 'draft' | 'ignored_author' | 'automatic_disabled' | 'not_scheduled' | null; latest_review?: { id: string; status: string } | null }>;
   /** Optional fix request extension; the implementation validates its own fields. */
   fixWithOptions?: (worker: Worker, claims: EngineScope, sourceId: string, method: string, host: HostConfig, signal: AbortSignal, body: Record<string, unknown>) => Promise<{ available: boolean; [key: string]: unknown }>;
 }

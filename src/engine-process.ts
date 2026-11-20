@@ -13,7 +13,7 @@ import { watchIndexProgress, type IndexProgress } from "./engine-index-progress"
 // credentials nor repository contents are copied into application logs.
 export async function runRust(mode: 'review' | 'index' | 'index-stats' | 'context' | 'source' | 'describe' | 'fix' | 'verify-fix', host: HostConfig,
   job: Record<string, unknown>, request: object, token: string, operation: string, signal: AbortSignal, credential?: ProviderCredential,
-  onIndexProgress?: (progress: IndexProgress) => Promise<void>) {
+  onIndexProgress?: (progress: IndexProgress) => Promise<void>, transport?: { endpoint: string; bearerToken: string }) {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(operation)) throw new Error('Invalid operation');
   const directory = resolve(process.env.INKSPECT_RUST_STATE || '/var/lib/inkspect/rust', operation);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -21,7 +21,7 @@ export async function runRust(mode: 'review' | 'index' | 'index-stats' | 'contex
     writeFile(join(directory, String(name)), JSON.stringify(data), { mode: 0o600 })));
   const args = mode === 'review' ? ['review'] : ['service', '--mode', mode, '--request', join(directory, 'request.json')];
   args.push('--config', join(directory, 'host.json'), '--job', join(directory, 'job.json'), '--out', join(directory, 'report.json'));
-  const env: Record<string, string> = { PATH: '/usr/local/bin:/usr/bin:/bin', INKSPECT_GITHUB_READ_TOKEN: token,
+  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV ?? 'production', PATH: '/usr/local/bin:/usr/bin:/bin', INKSPECT_GITHUB_READ_TOKEN: token,
     INKSPECT_USAGE_FILE: join(directory, 'usage.jsonl'), INKSPECT_GITHUB_APP_SLUG: appLogin() };
   if (mode === 'review' || mode === 'fix' || mode === 'verify-fix') env.INKSPECT_REVIEW_CONTEXT_FILE = join(directory, 'model-context.json');
   if (onIndexProgress) env.INKSPECT_INDEX_PROGRESS_FILE = join(directory, 'index-progress.json');
@@ -34,6 +34,15 @@ export async function runRust(mode: 'review' | 'index' | 'index-stats' | 'contex
     Object.assign(env,engineModelEnvironment());
   }
   // App credentials and database secrets never reach the review subprocess.
+  if (transport && !credential) {
+    const endpoint = new URL(transport.endpoint);
+    if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
+      throw new Error('Invalid local model transport');
+    for (const key of ['AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_SESSION_TOKEN','AWS_BEARER_TOKEN_BEDROCK']) delete env[key];
+    env.AWS_ENDPOINT_URL_BEDROCK_RUNTIME = endpoint.origin;
+    env.AWS_BEARER_TOKEN_BEDROCK = transport.bearerToken;
+    env.AWS_EC2_METADATA_DISABLED = 'true';
+  }
   if (credential) env.INKSPECT_BYOK_STDIN = '1';
   const child = spawn(process.env.INKSPECT_RUST_BINARY || '/usr/local/bin/inkspect-engine', args,
     { env, stdio: [credential ? 'pipe' : 'ignore', 'ignore', 'ignore'], detached: true });
@@ -86,7 +95,7 @@ export async function renderStoredReport(report: ReviewReport): Promise<NonNulla
     await writeFile(input, JSON.stringify(report), { mode: 0o600 });
     await promisify(execFile)(process.env.INKSPECT_RUST_BINARY || '/usr/local/bin/inkspect-engine', ['render', '--report', input, '--out', output], {
       timeout: 15_000, maxBuffer: 4096,
-      env: { PATH: '/usr/local/bin:/usr/bin:/bin', INKSPECT_APP_ORIGIN: process.env.BETTER_AUTH_URL || 'https://app.inkspect.si', INKSPECT_GITHUB_APP_SLUG: appLogin() },
+      env: { NODE_ENV: process.env.NODE_ENV ?? 'production', PATH: '/usr/local/bin:/usr/bin:/bin', INKSPECT_APP_ORIGIN: process.env.BETTER_AUTH_URL || 'https://app.inkspect.si', INKSPECT_GITHUB_APP_SLUG: appLogin() },
     });
     if ((await stat(output)).size > 8 * 1024 * 1024) throw new Error('Oversized engine presentation');
     const presentation = JSON.parse(await readFile(output, 'utf8'));
