@@ -27,3 +27,28 @@ fs.writeFileSync(out,JSON.stringify({endpoint:process.env.AWS_ENDPOINT_URL_BEDRO
   }
  } finally {for(const name of names)if(before[name]===undefined)delete process.env[name];else process.env[name]=before[name];await rm(dir,{recursive:true,force:true});}
 });
+
+test('a host-provided loopback transport isolates credentials and is never applied to customer-key execution', async () => {
+ const dir=await mkdtemp(join(tmpdir(),'local-model-transport-'));
+ const names=['INKSPECT_AI_PROVIDER','INKSPECT_RUST_STATE','INKSPECT_RUST_BINARY','AWS_BEARER_TOKEN_BEDROCK','AWS_SECRET_ACCESS_KEY'];
+ const before=Object.fromEntries(names.map(name=>[name,process.env[name]]));
+ try {
+  const binary=join(dir,'engine.cjs');
+  await writeFile(binary,'#!'+process.execPath+'\n'+`
+const fs=require('node:fs'),args=process.argv.slice(2);
+if(process.env.INKSPECT_BYOK_STDIN)process.stdin.resume();
+fs.writeFileSync(args[args.indexOf('--out')+1],JSON.stringify({endpoint:process.env.AWS_ENDPOINT_URL_BEDROCK_RUNTIME,
+localToken:process.env.AWS_BEARER_TOKEN_BEDROCK==='local-transport-token',awsSecret:!!process.env.AWS_SECRET_ACCESS_KEY}));
+`,{mode:0o700});
+  Object.assign(process.env,{INKSPECT_AI_PROVIDER:'bedrock',INKSPECT_RUST_STATE:dir,INKSPECT_RUST_BINARY:binary,
+   AWS_BEARER_TOKEN_BEDROCK:'synthetic-upstream-token',AWS_SECRET_ACCESS_KEY:'synthetic-secret'});
+  const host={timeout_seconds:5} as HostConfig, transport={endpoint:'http://127.0.0.1:12345',bearerToken:'local-transport-token'};
+  const result=await runRust('review',host,{}, {},'test','local',new AbortController().signal,undefined,undefined,transport);
+  assert.deepEqual(result.report,{endpoint:transport.endpoint,localToken:true,awsSecret:false});
+  const byok=await runRust('review',host,{}, {},'test','byok',new AbortController().signal,
+   {provider:'openai',model:'example-model',api_key:'synthetic-customer-key',max_output_tokens:10},undefined,transport);
+  assert.deepEqual(byok.report,{localToken:false,awsSecret:true});
+  await assert.rejects(runRust('review',host,{}, {},'test','invalid',new AbortController().signal,undefined,undefined,
+   {...transport,endpoint:'https://untrusted.example'}),/Invalid local model transport/);
+ } finally {for(const name of names)if(before[name]===undefined)delete process.env[name];else process.env[name]=before[name];await rm(dir,{recursive:true,force:true});}
+});

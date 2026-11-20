@@ -57,7 +57,7 @@ globalThis.fetch=async(input,init)=>{
     await pool.query('INSERT INTO "githubConnection"(id,"organizationId","installationId","accountLogin",repositories,"updatedAt") VALUES($1,$2,$3,$4,$5,now())',
       [connection, org, installation, 'fixture', JSON.stringify([{ id: repository, fullName: 'fixture/empty', private: true }])]);
     await pool.query('INSERT INTO "githubRepositoryClaim"(id,"repositoryId","organizationId","accountId","createdAt") VALUES($1,$2,$3,$4,now())', [randomUUID(), String(repository), org, userId]);
-    await pool.query(`CREATE TABLE repository_indexes(tenant_id text NOT NULL,repository_id text NOT NULL,id text NOT NULL,subject text NOT NULL,connection_id text NOT NULL,installation_id bigint NOT NULL,status text NOT NULL CHECK(status IN ('queued','running','completed','failed')),progress jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(tenant_id,repository_id,id))`);
+    await pool.query(await readFile(new URL('./repository-index-queue.sql', import.meta.url), 'utf8'));
     await pool.query(`INSERT INTO api_repository_worker(organization_id,repository_id,connection_id,installation_id,full_name,queue_database,queue_schema,app_id,private_key_file,size_bytes,access_verified_at,metadata_due_at)
       VALUES($1,'17',$2,44,'fixture/empty','app',$3,'1',$4,0,now(),now()+interval '1 hour')`, [org, connection, schema, key]);
     await pool.query("UPDATE api_engine_runtime SET generation='empty-index-test',origin=$1 WHERE id", [`http://127.0.0.1:${port}`]);

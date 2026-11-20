@@ -20,7 +20,7 @@ const checkOutputs = {
   failed: ['Review failed', 'The review could not finish.'],
   cancelled: ['Review cancelled', 'Review of this revision stopped.'],
 } as const;
-export type PullSnapshot = { head: string; base: string; open: boolean; draft: boolean; title?: string; author?: string };
+export type PullSnapshot = { head: string; base: string; baseRef: string; open: boolean; draft: boolean; title?: string; author?: string };
 type Comment = { id: number; body: string; user?: { type: string; login?: string }; performed_via_github_app?: { id: number }; issue_url?: string; in_reply_to_id?: number; path?: string; line?: number };
 
 export type FindingThread = { id: number; job: string; finding: string; path: string; line: number; body: string };
@@ -112,8 +112,8 @@ export class PullGitHub {
     const pull = await this.request(`${this.root}/pulls/${this.number}`);
     if (pull.number !== this.number || String(pull.base?.repo?.id) !== this.worker.repository_id ||
         pull.base?.repo?.full_name?.toLowerCase() !== this.worker.full_name.toLowerCase() ||
-        !/^[a-f0-9]{40}$/.test(pull.head?.sha) || !/^[a-f0-9]{40}$/.test(pull.base?.sha) || typeof pull.draft !== 'boolean') throw new Error('GitHub snapshot mismatch');
-    return { head: pull.head.sha, base: pull.base.sha, open: pull.state === 'open', draft: pull.draft,
+        !/^[a-f0-9]{40}$/.test(pull.head?.sha) || !/^[a-f0-9]{40}$/.test(pull.base?.sha) || typeof pull.base.ref !== 'string' || !pull.base.ref || typeof pull.draft !== 'boolean') throw new Error('GitHub snapshot mismatch');
+    return { head: pull.head.sha, base: pull.base.sha, baseRef: pull.base.ref, open: pull.state === 'open', draft: pull.draft,
       title: typeof pull.title === 'string' ? pull.title.trim() || undefined : undefined,
       author: typeof pull.user?.login === 'string' ? pull.user.login : undefined };
   }

@@ -30,7 +30,7 @@ test('GitHub comment delivery recovers an ambiguous POST, reuses its ID and refu
       assert.deepEqual(payload.repository_ids, [17]);
       return Response.json({ token: 'test-only-token', repositories: [{ id: 17 }] });
     }
-    if (path.endsWith('/pulls/1')) return Response.json({number:1,state:'open',draft:false,user:{login:'dependabot[bot]'},head:{sha:'b'.repeat(40)},base:{sha:'a'.repeat(40),repo:{id:17,full_name:'team/repo'}}});
+    if (path.endsWith('/pulls/1')) return Response.json({number:1,state:'open',draft:false,user:{login:'dependabot[bot]'},head:{sha:'b'.repeat(40)},base:{ref:'main',sha:'a'.repeat(40),repo:{id:17,full_name:'team/repo'}}});
     if (['/repos/team/repo/issues/comments/123/reactions', '/repos/team/repo/pulls/comments/456/reactions'].includes(path)) {
       assert.equal(init.method, 'POST');
       assert.deepEqual(JSON.parse(String(init.body)), { content: 'eyes' });

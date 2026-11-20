@@ -6,7 +6,7 @@ import { byokReady, openProviderCredential } from "../engine-credentials";
 import type { EngineJob } from "../engine-store";
 import type { EngineHttpPolicy } from "../engine-http-policy";
 
-export function selfHostedEnginePolicy(pool: Pool, services: Pick<EngineHttpPolicy, 'fix' | 'fixPullOpen' | 'retrieval'>): EngineHttpPolicy {
+export function selfHostedEnginePolicy(pool: Pool, services: Pick<EngineHttpPolicy, 'fix' | 'fixPullOpen' | 'fixPullState' | 'retrieval'>): EngineHttpPolicy {
   const reviews = selfHostedReviews(pool);
   return {
     ...services,

@@ -5,7 +5,7 @@ test('metadata refresh uses a lease, and signed revocation wins over in-flight r
  pools.set('app',pool);process.env.API_GITHUB_WEBHOOK_SECRET_FILE=join(directory,'secret');
  try{
   await writeFile(process.env.API_GITHUB_WEBHOOK_SECRET_FILE,secret,{mode:0o600});await pool.query(`CREATE SCHEMA "${schema}"`);
-  await pool.query(await readFile(new URL(import.meta.resolve('@inkspect/api/migrations/001_repository_api.sql')),'utf8'));await pool.query(await readFile(new URL(import.meta.resolve('@inkspect/api/migrations/012_repository_indexes.sql')),'utf8'));
+  await pool.query(await readFile(new URL(import.meta.resolve('@inkspect/api/migrations/001_repository_api.sql')),'utf8'));await pool.query(await readFile(new URL('../fixtures/repository-index-queue.sql', import.meta.url),'utf8'));
   await pool.query(`INSERT INTO api_repository_worker(organization_id,repository_id,connection_id,installation_id,full_name,queue_database,queue_schema,app_id,private_key_file) VALUES('org','17','c',44,'team/repo','app',$1,1,'unused')`,[schema]);
   let calls=0;let release:()=>void=()=>{};let started:()=>void=()=>{};const ready=new Promise<void>(r=>{started=r;});const pause=new Promise<void>(r=>{release=r;});
   const refreshing=refreshOne(new AbortController().signal,async()=>{calls++;started();await pause;return 1024;});await ready;

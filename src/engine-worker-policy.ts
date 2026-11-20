@@ -6,6 +6,9 @@ import type { ProviderCredential } from "./engine-credentials";
 import type { HostConfig } from "./engine-contract";
 
 export interface EngineWorkerPolicy {
+  modelFetcher?: typeof fetch;
+  /** Optional host-owned execution transport; the default executor is unchanged. */
+  runRust?: typeof import('./engine-process').runRust;
   /** Optional edition work, sharing the active generation's capacity and drain lifecycle. */
   background?: () => Promise<void>;
   http: EngineHttpPolicy;

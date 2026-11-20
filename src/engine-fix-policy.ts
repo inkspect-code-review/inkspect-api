@@ -8,6 +8,7 @@ import type { Worker } from "./repository-store";
 import type { ProviderCredential } from "./engine-credentials";
 
 export interface FixPolicy {
+  runRust?: typeof import('./engine-process').runRust;
   managedMode: string;
   /** Optional presentation of an edition-owned execution diagnostic. */
   status?: (job?: EngineJob) => ReturnType<typeof import('./engine-fix-core').fixStatus>;

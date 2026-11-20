@@ -4,7 +4,7 @@ import { recordProviderUsage } from "./usage-store";
 import { ReviewError } from "@inkspect/core/lib/review-access";
 import { selfHostedEnginePolicy, selfHostedProviderCredential } from "./engine-policy";
 import { selfHostedFixPolicy } from "./fix-policy";
-import { fixPullOpen, handleFix, isFix } from "../engine-fix-core";
+import { fixPullOpen, fixPullState, handleFix, isFix } from "../engine-fix-core";
 import { MAX_FIX_MODEL_CALLS } from "../engine-fix-verification";
 import { usageReceipt, type HostConfig } from "../engine-contract";
 import { modelUsage } from "../engine-model-usage";
@@ -30,7 +30,7 @@ export function selfHostedEngineWorkerPolicy(pool: Pool): EngineWorkerPolicy {
     fix,
     http: selfHostedEnginePolicy(pool, {
       fix: (worker, claims, id, method, configuration, signal, retry) => handleFix(fix, worker, claims, id, method, configuration, signal, undefined, retry),
-      fixPullOpen, retrieval,
+      fixPullOpen, fixPullState, retrieval,
     }),
     async allowed(job) {
       const row = await reviews.authorize({ organization: job.organization_id, user: job.subject, repository: Number(job.repository_id), connection: job.connection_id,
