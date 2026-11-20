@@ -65,7 +65,7 @@ test('self-hosted execution uses instance or encrypted organization providers an
     const source = async (digit: string) => {
       const id = 'J-' + digit.repeat(32);
       await pool.query(`INSERT INTO api_engine_job(id,request_id,organization_id,repository_id,connection_id,installation_id,subject,request,snapshot,host_config,status,report)
-        VALUES($1,$1,'org','2','connection',1,'owner','{"number":3}',$2,$3,'completed',$4)`, [id, { base: 'a'.repeat(40), base_tip: 'a'.repeat(40), head: 'b'.repeat(40) }, host, { run: { id }, findings: [{ id: 'F1' }] }]);
+        VALUES($1,$1,'org','2','connection',1,'owner','{"number":3}',$2,$3,'completed',$4)`, [id, { base_ref: 'main', base: 'a'.repeat(40), base_tip: 'a'.repeat(40), head: 'b'.repeat(40) }, host, { run: { id }, findings: [{ id: 'F1' }] }]);
       return id;
     };
     const binary = join(directory, 'engine');

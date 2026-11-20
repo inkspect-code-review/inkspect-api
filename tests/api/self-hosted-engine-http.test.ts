@@ -58,7 +58,7 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
       if (!address.startsWith('https://api.github.com/')) return originalFetch(url, init);
       if (address.endsWith('/installation')) return Response.json({ id: 1, app_id: 7 });
       if (address.endsWith('/access_tokens')) return Response.json({ token: 'synthetic-token', repositories: [{ id: 2 }] });
-      if (address.endsWith('/pulls/3')) return Response.json({ number: 3, title: 'Update dependencies', state: 'open', draft: false, base: { sha: 'a'.repeat(40), repo: { id: 2, full_name: 'team/repo' } }, head: { sha: 'b'.repeat(40) } });
+      if (address.endsWith('/pulls/3')) return Response.json({ number: 3, title: 'Update dependencies', state: 'open', draft: false, base: { ref: 'main', sha: 'a'.repeat(40), repo: { id: 2, full_name: 'team/repo' } }, head: { sha: 'b'.repeat(40) } });
       if (address.includes('/compare/')) return Response.json({ merge_base_commit: { sha: 'c'.repeat(40) } });
       throw new Error('Unexpected upstream call');
     };
@@ -86,6 +86,7 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
     assert.equal(stale.review_reason, 'Review the latest version.');
     await send(`/jobs/${jobs[0].job.id}/fix`, 'GET', undefined, claims);
     assert.equal(pullChecks, 1, 'progress polling must not read live PR state');
+    assert.equal(jobs[0].snapshot.base_ref, 'main');
     assert.equal(jobs[0].snapshot.title, 'Update dependencies');
     await pool.query("UPDATE api_engine_job SET snapshot=snapshot-'title' WHERE id=$1", [jobs[0].job.id]);
     const resolved = await send('/github/pulls/3/title', 'GET', undefined, claims);

@@ -31,16 +31,16 @@ test('latest fix review is pinned to the same tenant, installation, repository, 
   assert.equal(await fixReviewBlocker(source,live),null,'changing settings can resume waiting');
   await pool.query('UPDATE api_pull_request_workflow SET next_run_at=null');
   assert.equal(await fixReviewBlocker(source,live),'not_scheduled');
-  assert.equal(await latestFixReview(source,'current'),null);
+  assert.equal(await latestFixReview(source,'current','main'),null);
   const insert=async(id:string,patch:Partial<EngineJob>={},status='running')=>{
-   const row={...source,snapshot:{head:'current'},...patch};
+   const row={...source,snapshot:{head:'current',base_ref:'main'},...patch};
    await pool.query('INSERT INTO api_engine_job VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())',[id,status,row.organization_id,row.repository_id,row.connection_id,row.installation_id,row.request,row.snapshot]);
   };
   await insert('correct');
-  for(const [i,patch] of [{organization_id:'other'},{repository_id:'5'},{connection_id:'other'},{installation_id:6},{request:{number:7}},{snapshot:{head:'old'}},{request:{number:4,fix_of:'source'}}].entries()) await insert('wrong'+i,patch as Partial<EngineJob>);
-  assert.deepEqual(await latestFixReview(source,'current'),{id:'correct',status:'running'});
+  for(const [i,patch] of [{organization_id:'other'},{repository_id:'5'},{connection_id:'other'},{installation_id:6},{request:{number:7}},{snapshot:{head:'old',base_ref:'main'}},{snapshot:{head:'current',base_ref:'release'}},{snapshot:{head:'current'}},{request:{number:4,fix_of:'source'}}].entries()) await insert('wrong'+i,patch as Partial<EngineJob>);
+  assert.deepEqual(await latestFixReview(source,'current','main'),{id:'correct',status:'running'});
   await insert('newest',{},'completed');
-  assert.deepEqual(await latestFixReview(source,'current'),{id:'newest',status:'completed'});
-  assert.equal(await latestFixReview(source,'not-reviewed'),null);
+  assert.deepEqual(await latestFixReview(source,'current','main'),{id:'newest',status:'completed'});
+  assert.equal(await latestFixReview(source,'not-reviewed','main'),null);
  } finally {pools.delete('app');await pool.query(`DROP SCHEMA ${schema} CASCADE`);await pool.end();}
 });

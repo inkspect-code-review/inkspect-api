@@ -6,6 +6,13 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-20
+
+#### Fixed
+
+- Bind fix eligibility and latest-review lookup to the reviewed PR head and target branch. Older reviews without a recorded target require a new review.
+- Restore the queue schema fixture used by PostgreSQL metadata and indexing tests.
+
 ### 2026-11-19
 
 #### Added

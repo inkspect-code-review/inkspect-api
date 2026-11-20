@@ -20,11 +20,17 @@ import { diagnosticMessage } from "./engine-diagnostics";
 type Claims = Omit<EngineClaims, 'expires'>;
 export const isFix = (job: EngineJob) => typeof job.request.fix_of === 'string';
 
-export function fixPullReadiness(snapshot: { head: string; base_tip?: string }, live: { open: boolean; draft: boolean; head: string; base: string }) {
-  const review_stale = snapshot.head !== live.head;
+function fixTargetReason(reviewed: string | undefined, current: string | undefined) {
+  if (!reviewed) return 'This review did not record the target branch. Run a new review before fixing this PR.';
+  if (current !== reviewed) return 'The PR target branch changed. Review the new target before fixing this PR.';
+}
+
+export function fixPullReadiness(snapshot: { head: string; base_ref?: string }, live: { open: boolean; draft: boolean; head: string; baseRef: string }) {
+  const targetReason = fixTargetReason(snapshot.base_ref, live.baseRef);
+  const review_stale = snapshot.head !== live.head || !!targetReason;
   return { pr_open: live.open, pr_ready: live.open && !live.draft && !review_stale, review_stale,
     review_reason: !live.open ? 'This PR is closed or merged.' : live.draft ? 'Mark this PR ready for review before fixing it.'
-      : review_stale ? 'This PR has newer commits. Fixes are available on the latest review.' : undefined };
+      : targetReason ?? (review_stale ? 'This PR has newer commits. Fixes are available on the latest review.' : undefined) };
 }
 
 // Only the Findings banner requests live PR state. History and progress stay local.
@@ -34,7 +40,7 @@ export async function fixPullState(worker: Worker, sourceId: string, signal: Abo
   const github = await PullGitHub.open(worker, source.request.number, signal);
   const live = await github.snapshot();
   const readiness = fixPullReadiness(source.snapshot, live);
-  const latest_review = readiness.review_stale && live.open ? await latestFixReview(source, live.head) : null;
+  const latest_review = readiness.review_stale && live.open ? await latestFixReview(source, live.head, live.baseRef) : null;
   const review_blocker = readiness.review_stale && live.open && !latest_review ? await fixReviewBlocker(source, live) : null;
   return { ...readiness, latest_review, review_blocker };
 }
@@ -50,12 +56,12 @@ export async function fixReviewBlocker(source: EngineJob, live: { draft: boolean
   if (settings.rows[0]?.automatic === false) return 'automatic_disabled';
   return workflow.rows[0]?.next_run_at ? null : 'not_scheduled';
 }
-export async function latestFixReview(source: EngineJob, head: string) {
+export async function latestFixReview(source: EngineJob, head: string, baseRef: string) {
   return (await database().query<{ id: string; status: string }>(`SELECT id,status FROM api_engine_job
     WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4
-      AND request->>'number'=$5 AND snapshot->>'head'=$6 AND NOT (request ? 'fix_of')
+      AND request->>'number'=$5 AND snapshot->>'head'=$6 AND snapshot->>'base_ref'=$7 AND NOT (request ? 'fix_of')
     ORDER BY created_at DESC,id DESC LIMIT 1`,
-    [source.organization_id, source.repository_id, source.connection_id, source.installation_id, String(source.request.number), head])).rows[0] ?? null;
+    [source.organization_id, source.repository_id, source.connection_id, source.installation_id, String(source.request.number), head, baseRef])).rows[0] ?? null;
 }
 export async function fixPullOpen(worker: Worker, sourceId: string, signal: AbortSignal) {
   return (await fixPullState(worker, sourceId, signal)).pr_open;
@@ -102,6 +108,8 @@ export function validateFixPull(pull: any, worker: Worker, source: EngineJob, br
     throw new ReviewError(409, 'This PR is a draft. Mark it ready for review before fixing it.');
   if (pull.head?.sha !== source.snapshot.head)
     throw new ReviewError(409, 'This PR is open, but its commits changed after this review. Open the latest review before fixing it.');
+  const targetReason = fixTargetReason(source.snapshot.base_ref, pull.base.ref);
+  if (targetReason) throw new ReviewError(409, targetReason);
   const ref = pull.head.ref;
   if (typeof ref !== 'string' || !ref || ref.length > 255 || /[\x00-\x20~^:?*\[\\]/.test(ref) || ref.includes('..') || ref.includes('@{')
     || ref.startsWith('-') || ref.startsWith('/') || ref.endsWith('/') || ref.endsWith('.') || ref.endsWith('.lock')

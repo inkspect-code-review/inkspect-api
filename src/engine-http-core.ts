@@ -103,7 +103,7 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
         const base = compare.merge_base_commit?.sha;
         if (!/^[a-f0-9]{40}$/.test(base)) throw new Error('Invalid merge base');
         const id = jobID(identity);
-        const snapshot = { title: live.title, url: `https://github.com/${worker.full_name}/pull/${body.number}`, repository_id: worker.repository_id, base_tip: live.base, base, head: live.head, review_model_id: body.byok?.model || host.model_id };
+        const snapshot = { title: live.title, url: `https://github.com/${worker.full_name}/pull/${body.number}`, repository_id: worker.repository_id, base_tip: live.base, base_ref: live.baseRef, base, head: live.head, review_model_id: body.byok?.model || host.model_id };
         const tx = await database().connect();
         try {
           await tx.query('BEGIN');
