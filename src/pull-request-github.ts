@@ -23,13 +23,13 @@ const checkOutputs = {
 export type PullSnapshot = { head: string; base: string; baseRef: string; open: boolean; draft: boolean; title?: string; author?: string };
 type Comment = { id: number; body: string; user?: { type: string; login?: string }; performed_via_github_app?: { id: number }; issue_url?: string; in_reply_to_id?: number; path?: string; line?: number };
 
-export type FindingThread = { id: number; job: string; finding: string; path: string; line: number; body: string };
+export type FindingThread = { id: number; nodeId?: string; originalHead?: string; outdated?: boolean; job: string; finding: string; path: string; line: number; body: string };
 const threadQuery = `query FindingThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
     reviewThreads(first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
-      nodes { isResolved isOutdated diffSide path line
-        comments(first: 1) { nodes { fullDatabaseId body author { __typename login } replyTo { id } } }
+      nodes { id isResolved isOutdated diffSide path line originalLine
+        comments(first: 1) { nodes { fullDatabaseId body originalCommit { oid } author { __typename login } replyTo { id } } }
       }
     }
   } }
@@ -72,7 +72,7 @@ export class PullGitHub {
       : checkOutputs[phase];
     const externalId = check.attempt ? `${check.job}/${check.attempt}` : check.job;
     const conclusions = { unavailable: 'failure', clean: 'success', blocking: 'failure', incomplete: 'action_required', failed: 'failure', cancelled: 'cancelled' };
-    const body = { details_url: details, output: notice ?? { title, summary },
+    const body = { external_id: externalId, details_url: details, output: notice ?? { title, summary },
       ...(phase === 'queued' ? { status: 'queued' } : phase === 'in_progress' || phase === 'paused' ? { status: 'in_progress' } : { status: 'completed', conclusion: conclusions[phase] }) };
     if (!check.id) {
       // The job ID is stable across worker restarts, including a lost POST receipt.
@@ -131,7 +131,7 @@ export class PullGitHub {
     // Inline comments may identify the installation's bot only by its account.
     return !!this.appSlug && comment.user.login?.toLowerCase() === `${this.appSlug}[bot]`;
   }
-  async findingThreads(workflow: string): Promise<FindingThread[]> {
+  async findingThreads(workflow: string, includeOutdated = false): Promise<FindingThread[]> {
     const [owner, repo] = this.worker.full_name.split('/');
     const threads: FindingThread[] = [];
     let cursor: string | null = null;
@@ -141,12 +141,13 @@ export class PullGitHub {
       if (result.errors?.length || !Array.isArray(connection?.nodes)) throw new Error('Cannot read PR finding threads');
       for (const thread of connection.nodes) {
         const root = thread.comments.nodes[0];
-        if (thread.isResolved || thread.isOutdated || thread.diffSide !== 'RIGHT' || !Number.isInteger(thread.line) ||
-            !root || root.replyTo || root.author?.__typename !== 'Bot' || !this.appSlug || root.author.login.toLowerCase() !== this.appSlug) continue;
+        const line = thread.isOutdated ? thread.originalLine : thread.line;
+        if (thread.isResolved || (thread.isOutdated && !includeOutdated) || thread.diffSide !== 'RIGHT' || !Number.isInteger(line) ||
+            !root || root.replyTo || root.author?.__typename !== 'Bot' || !this.appSlug || root.author.login.toLowerCase().replace(/\[bot\]$/, '') !== this.appSlug) continue;
         const marker = /^<!-- inkspect:finding:([^:\s]+):([^:\s]+):([^:\s]+) -->\r?\n/.exec(root.body);
         const id = Number(root.fullDatabaseId);
         if (marker?.[1] === workflow && Number.isSafeInteger(id) && id > 0) {
-          threads.push({ id, job: marker[2], finding: marker[3], path: thread.path, line: thread.line, body: root.body.slice(marker[0].length) });
+          threads.push({ id, nodeId: thread.id, originalHead: root.originalCommit?.oid, outdated: thread.isOutdated, job: marker[2], finding: marker[3], path: thread.path, line, body: root.body.slice(marker[0].length) });
         }
       }
       if (!connection.pageInfo.hasNextPage) return threads.sort((a, b) => a.id - b.id);
@@ -154,6 +155,27 @@ export class PullGitHub {
       cursor = connection.pageInfo.endCursor;
     }
     throw new Error('GitHub thread pagination limit');
+  }
+  private comparisonClient?: PullGitHub;
+  async compareFindingRevisions(before: string, head: string) {
+    if (!this.comparisonClient) {
+      const access = await repositoryAccess(this.worker, this.signal, true, false);
+      this.comparisonClient = new PullGitHub(this.worker, this.number, access.token, this.signal, false);
+    }
+    try {
+      return await this.comparisonClient.request(`${this.root}/compare/${before}...${head}`);
+    } catch (error) {
+      if (error instanceof GitHubFailure && [404, 409, 422].includes(error.status)) return null;
+      throw error;
+    }
+  }
+  async resolveFindingThread(nodeId: string) {
+    const result = await this.githubRequest('/graphql', 'POST', {
+      query: 'mutation ResolveFinding($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { id isResolved } } }',
+      variables: { thread: nodeId },
+    });
+    const thread = result.data?.resolveReviewThread?.thread;
+    if (result.errors?.length || thread?.id !== nodeId || thread.isResolved !== true) throw new Error('Cannot confirm finding resolution');
   }
   async list(path: string): Promise<any[]> {
     const all: any[] = [];

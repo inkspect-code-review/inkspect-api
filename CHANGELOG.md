@@ -6,7 +6,26 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-21
+
+#### Changed
+
+- Expose saved index coverage for visible, connected repositories in the workspace.
+
+- Recognize Bedrock GPT-6.2 Sol Global pricing when measuring review costs.
+
+- Refresh the chat dependency to identify individual findings for issue drafts.
+- Refresh the shared chat dependency with text-only input guidance and optional product guides.
+
+#### Fixed
+
+- Reconcile GitHub check re-runs and completed dashboard reviews against the same pull request and revisions. Link inline findings from the PR summary and keep full details for findings without a comment.
+
 ### 2026-11-20
+
+#### Added
+
+- Verify earlier bot findings on subsequent PR reviews and reply with the repair and a source link before resolving the GitHub conversation.
 
 #### Fixed
 

@@ -1,3 +1,4 @@
+import { linkedFindingSummary } from '../../src/continuing-findings';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { generateKeyPairSync } from 'node:crypto';
@@ -127,14 +128,14 @@ test('thread lookup selects the earliest open current-line finding by this app o
     worker: { full_name: 'team/repo' }, number: 7, appSlug: 'review-app', signal: new AbortController().signal,
   });
   const root = { body: '<!-- inkspect:finding:workflow:old-job:old-id -->\nFirst finding', fullDatabaseId: '4500000001', replyTo: null, author: { __typename: 'Bot', login: 'review-app' } };
-  const thread = { path: 'manifest.json', line: 265, diffSide: 'RIGHT', isOutdated: false, isResolved: false, comments: { nodes: [root] } };
+  const thread = { id: 'current', path: 'manifest.json', line: 265, diffSide: 'RIGHT', isOutdated: false, isResolved: false, comments: { nodes: [root] } };
   let pages = 0;
   t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
     assert.equal(url, 'https://api.github.com/graphql');
     assert.deepEqual(JSON.parse(String(init.body)).variables, { owner: 'team', repo: 'repo', number: 7, cursor: pages ? 'after-first' : null });
     pages++;
     const nodes = pages === 1 ? [
-      { ...thread, isResolved: true }, { ...thread, isOutdated: true }, { ...thread, diffSide: 'LEFT' },
+      { ...thread, isResolved: true }, { ...thread, id: 'outdated', isOutdated: true, line: null, originalLine: 265 }, { ...thread, diffSide: 'LEFT' },
       ...[{ author: { __typename: 'Bot', login: 'other' } }, { author: { __typename: 'User', login: 'review-app' } },
         { replyTo: { id: 'reply' } }, { body: root.body.replace('workflow', 'different') }, { fullDatabaseId: '4500000002' }]
         .map(fields => ({ ...thread, comments: { nodes: [{ ...root, ...fields }] } })),
@@ -145,4 +146,18 @@ test('thread lookup selects the earliest open current-line finding by this app o
   });
   assert.deepEqual((await method.call(github, 'workflow')).map(t => t.id), [4500000001, 4500000002]);
   assert.equal(pages, 2);
+  pages = 0;
+  const all = await method.call(github, 'workflow', true);
+  assert.deepEqual(all.filter(t => t.outdated).map(t => t.nodeId), ['outdated']);
+});
+
+test('summary links posted finding titles and retains unmatched findings and report notes', () => {
+  const findings = [{id:'a',title:'First [item]'}, {id:'b',title:'Second'}];
+  const blocks = findings.map(f => `#### P2 · ${f.title}\n\nLocation: src/main.ts\n\n**Reason:** why ${f.id}\n\n**Suggested fix:** fix\n\n**Verification:** verify\n\n`);
+  const body = '### Findings\n\n' + blocks.join('') + '> Verification gap: test\n\nFooter';
+  const summary = linkedFindingSummary(body, findings, {a:{id:123}}, 'https://github.com/org/repo/pull/7');
+  assert.ok(summary.includes('[First &#91;item&#93;](https://github.com/org/repo/pull/7#discussion_r123)'));
+  assert.ok(!summary.includes('why a')); assert.ok(summary.includes(blocks[1]));
+  assert.ok(summary.endsWith('> Verification gap: test\n\nFooter'));
+  assert.equal(linkedFindingSummary(body, findings, {a:{}}, 'unused'), body);
 });

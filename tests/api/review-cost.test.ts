@@ -30,8 +30,10 @@ test('failed/ambiguous calls survive alongside successful retries and cannot bec
 });
 test('cache reads and the long-context boundary use distinct rates for the whole call', () => {
   for(const [input,expected] of [[272000,'543998000'],[272001,'1088000000']]) {
-    const c=reviewCost([{kind:'model.started'},{kind:'model.usage',input_tokens:input,output_tokens:0,cached_input_tokens:5,cache_write_input_tokens:15}],host);
-    assert.equal(c.total_nano_usd,String(expected));
+    for (const model of ['global.openai.gpt-6.1-sol', 'global.openai.gpt-6.2-sol']) {
+      const cost = reviewCost([{kind:'model.started',model},{kind:'model.usage',input_tokens:input,output_tokens:0,cached_input_tokens:5,cache_write_input_tokens:15}],host);
+      assert.equal(cost.total_nano_usd,String(expected));
+    }
   }
 });
 test('missing cache split, unknown model, duplicate usage and absent journal never claim exact costs', () => {

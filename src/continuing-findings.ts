@@ -18,7 +18,7 @@ function overlap(a: string, b: string) {
   return { shared, fraction: shared / Math.max(1, Math.min(left.size, right.size)) };
 }
 
-function sameIssue(before: string, now: string) {
+export function sameIssue(before: string, now: string) {
   if (before === now) return true;
   const a = sections(before), b = sections(now);
   if (!a || !b) return false;
@@ -31,18 +31,39 @@ function sameIssue(before: string, now: string) {
 
 export function originalThread(threads: FindingThread[], job: string, finding: { id: string; location: { path: string; start_line: number } }, body: string) {
   // GitHub maps surviving lines to their current position after a push/rebase.
-  return threads.find(thread => thread.job !== job && thread.path === finding.location.path &&
+  return threads.find(thread => !thread.outdated && thread.job !== job && thread.path === finding.location.path &&
     thread.line === finding.location.start_line && (thread.finding === finding.id || sameIssue(thread.body, body)));
 }
 
-export function continuingSummary(report: string, findings: { title: string; thread: number }[], pullUrl: string) {
-  if (!findings.length) return report;
-  let summary = report + '\n\n### Still present from earlier reviews (' + findings.length + ')';
-  for (const [index, finding] of findings.entries()) {
-    const label = finding.title.slice(0, 200).replace(/\s+/g, ' ').replace(/[\\`*_{}\[\]()<>~|@!#&]/g, char => '&#' + char.charCodeAt(0) + ';');
-    const entry = `\n- [${label}](${pullUrl}#discussion_r${finding.thread})`;
-    if (Buffer.byteLength(summary + entry) > 64000) return summary + `\n- Plus ${findings.length - index} more continuing findings.`;
-    summary += entry;
+type SummaryFinding = { id: string; title: string };
+type Receipt = { id?: number; continued?: number };
+
+// Version 1 engine summaries render finding sections in report order and may
+// omit a suffix to fit GitHub. Keep unrecognized prose and all unlinked details.
+export function linkedFindingSummary(report: string, findings: SummaryFinding[], deliveries: Record<string, Receipt>, pullUrl: string) {
+  const link = (finding: SummaryFinding, id: number) => {
+    const title = finding.title.slice(0, 500).replace(/\s+/g, ' ').replace(/[\\`*_{}\[\]()<>~|@!#&]/g, ch => '&#' + ch.charCodeAt(0) + ';');
+    return `- [${title}](${pullUrl}#discussion_r${id})`;
+  };
+  const linked = new Set<string>();
+  let index = 0;
+  const block = /^#### [^\n]+\n\nLocation: [^\n]+\n\n\*\*Reason:\*\* [^\n]*\n\n\*\*Suggested fix:\*\* [^\n]*\n\n\*\*Verification:\*\* [^\n]*\n\n/gm;
+  let summary = report.replace(block, original => {
+    const finding = findings[index++];
+    const delivery = finding && deliveries[finding.id];
+    if (!delivery || (!delivery.id && !delivery.continued)) return original;
+    linked.add(finding.id);
+    return delivery.continued ? '' : link(finding, delivery.id!) + '\n\n';
+  }).replace(/### Findings\n\n(?=>|\[View the full report|---)/, '');
+  for (const continued of [false, true]) {
+    const rows = findings.filter(f => continued ? deliveries[f.id]?.continued : deliveries[f.id]?.id && !linked.has(f.id));
+    if (!rows.length) continue;
+    summary += continued ? `\n\n### Still present from earlier reviews (${rows.length})` : '\n\n### Inline findings';
+    for (const f of rows) {
+      const entry = '\n' + link(f, (deliveries[f.id].continued ?? deliveries[f.id].id)!);
+      if (Buffer.byteLength(summary + entry) > 64000) break;
+      summary += entry;
+    }
   }
   return summary;
 }

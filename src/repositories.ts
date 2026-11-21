@@ -4,19 +4,35 @@ import { readReviewJSON, reviewAccess, ReviewError, reviewJSON } from "@inkspect
 import { admitIndex, repositoryStars, setRepositoryStar } from "@inkspect/core/lib/repository-store";
 import { reviewChannel } from "@inkspect/core/lib/realtime";
 import { captureError } from "@inkspect/core/lib/diagnostics/server";
-import { cancelIndex, eligibility, enqueueIndex, latestIndex, workerFor, preparingRepository } from "./repository-store";
+import { cancelIndex, eligibility, enqueueIndex, latestIndex, repositoryIndexCoverage, workerFor, preparingRepository } from "./repository-store";
 const defaults = { indexFreshness, admitIndex, repositoryStars, setRepositoryStar, cancelIndex, enqueueIndex, latestIndex, workerFor };
-export async function repositories(request: Request, auth: Auth, store = defaults) {
+export async function repositories(request: Request, auth: Auth, store: typeof defaults & { repositoryIndexCoverage?: typeof repositoryIndexCoverage } = defaults) {
   const action = new URL(request.url).searchParams.get('action') || 'list';
   let stage = 'access';
   try {
     const access = await reviewAccess(request, auth);
     const url = new URL(request.url);
-    stage = ['list', 'stars', 'star', 'detail', 'index', 'analyze', 'cancel'].includes(action) ? action : 'unknown_action';
+    stage = ['list', 'index-coverage', 'stars', 'star', 'detail', 'index', 'analyze', 'cancel'].includes(action) ? action : 'unknown_action';
     const channel = reviewChannel(access.organizationId);
     if (request.method === 'GET' && action === 'list') {
       const all = [...new Map(access.connections.flatMap(c => JSON.parse(c.repositories) as Repository[]).map(repo => [repo.id, repo])).values()];
       return reviewJSON({ repositories: all, realtime_channel: channel });
+    }
+    if (request.method === 'GET' && action === 'index-coverage') {
+      const ids = [...new Set((url.searchParams.get('ids') ?? '').split(',').map(Number))];
+      if (ids.length > 20 || ids.some(id => !Number.isSafeInteger(id) || id < 1)) throw new ReviewError(400, 'Choose up to 20 repositories.');
+      const allowed = new Map<number, typeof access.connections[number]>();
+      for (const connection of access.connections) {
+        for (const repo of JSON.parse(connection.repositories) as Repository[]) {
+          if (!allowed.has(repo.id)) allowed.set(repo.id, connection);
+        }
+      }
+      const scopes = ids.flatMap(id => {
+        const connection = allowed.get(id);
+        return connection ? [{ repository_id: String(id), connection_id: connection.id, installation_id: connection.installationId }] : [];
+      });
+      const coverage = await (store.repositoryIndexCoverage ?? repositoryIndexCoverage)(access.organizationId, scopes);
+      return reviewJSON({ coverage });
     }
     if (request.method === 'GET' && action === 'stars') return reviewJSON({ stars: await store.repositoryStars(access.organizationId, access.userId), realtime_channel: channel });
     const repository = Number(url.searchParams.get('repository'));

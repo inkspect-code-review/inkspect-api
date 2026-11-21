@@ -1,3 +1,4 @@
+import { priorFindings } from './finding-followup';
 import { enqueueAutomaticFixes } from "./engine-auto-fix-core";
 import { scheduleBackgroundWork } from "./engine-background";
 import { isFix, runFix, handleFix } from "./engine-fix-core";
@@ -108,6 +109,11 @@ async function runReview(job: EngineJob) {
     const credential = !isFix(job) ? await policy.credential(job) : undefined;
     const result = isFix(job) ? await runFix(policy.fix, job, worker, controller.signal) : await (policy.runRust ?? runRust)('review', job.host_config, { run_id: job.id, tenant_id: job.organization_id, repository_id: job.repository_id,
       owner, repo, pull_number: job.request.number, base_sha: job.snapshot.base, head_sha: job.snapshot.head,
+      prior_findings: await priorFindings(job, worker, controller.signal).catch(() => {
+        controller.signal.throwIfAborted();
+        console.warn(JSON.stringify({ event: 'review.prior_findings_unavailable', job: job.id }));
+        return [];
+      }),
       review_notes: job.request.review_notes || [], auto_review: false, publish_inline_comments: false }, {}, token, job.id, controller.signal, credential);
     await authorizedWorker(jobClaims(job));
     const report = result.report;

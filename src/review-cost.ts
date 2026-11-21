@@ -4,6 +4,7 @@ import type { ReviewCost, ReviewCostCall } from "@inkspect/core/lib/review-cost"
 const count = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) >= 0;
 // Provider list prices, not the conservative admission ceilings or customer credit prices.
 // https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-2-sol.html
 // https://aws.amazon.com/bedrock/pricing/ (Cohere Embed 4: $0.12/M, Rerank 3.5: $2/1K search units)
 export function reviewCost(events: any[], host: HostConfig): ReviewCost {
   const calls: ReviewCostCall[] = [];
@@ -27,7 +28,7 @@ export function reviewCost(events: any[], host: HostConfig): ReviewCost {
       if (category === 'model' && count(m.input_tokens) && count(m.output_tokens)) {
         const read = m.cached_input_tokens ?? 0, write = m.cache_write_input_tokens;
         // Legacy receipts collapsed cache writes into input. Do not reprice them as uncached tokens.
-        if (model === 'global.openai.gpt-6.1-sol' && count(read) && count(write) && m.input_tokens >= read + write) {
+        if ((model === 'global.openai.gpt-6.1-sol' || model === 'global.openai.gpt-6.2-sol') && count(read) && count(write) && m.input_tokens >= read + write) {
           const long = m.input_tokens > 272000;
           const rates = { input: long ? 4000 : 2000, output: long ? 15000 : 10000, cache_read: long ? 200 : 100, cache_write: long ? 5000 : 2500 };
           call.rates = rates;
@@ -61,7 +62,7 @@ export function reviewCost(events: any[], host: HostConfig): ReviewCost {
   });
   const complete = events.length > 0 && components.every(c => c.complete);
   const measured = components.reduce((sum, c) => sum + BigInt(c.measured_nano_usd), 0n).toString();
-  return { version: 1, currency: 'USD', basis: 'provider_list_price', pricing_date: '2026-10-30', complete,
+  return { version: 1, currency: 'USD', basis: 'provider_list_price', pricing_date: '2026-11-21', complete,
     total_nano_usd: complete ? measured : null, measured_nano_usd: measured,
     unmeasured_calls: calls.filter(c => c.status === 'unmeasured').length,
     estimated_nano_usd: components.reduce((sum, c) => sum + BigInt(c.estimated_nano_usd), 0n).toString(), calls, components };
