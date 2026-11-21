@@ -19,6 +19,7 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 #### Fixed
 
+- Preserve finding details when a PR summary cannot be matched to its inline comments.
 - Reconcile GitHub check re-runs and completed dashboard reviews against the same pull request and revisions. Link inline findings from the PR summary and keep full details for findings without a comment.
 
 ### 2026-11-20

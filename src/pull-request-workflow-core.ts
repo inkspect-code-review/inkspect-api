@@ -356,7 +356,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
       // Link only confirmed deliveries. On a rejected/uncertain inline post
       // the summary still contains the full finding while the worker retries.
       await publish(linkedFindingSummary(report, result.report.findings, deliveries,
-        `https://github.com/${worker.full_name}/pull/${row.number}`));
+        `https://github.com/${worker.full_name}/pull/${row.number}`, result.report.presentation?.github_findings ?? {}));
     }
     if (resolving) {
       if (s.resolutionJob !== s.job) { s.resolutionJob = s.job; s.resolutions = {}; }

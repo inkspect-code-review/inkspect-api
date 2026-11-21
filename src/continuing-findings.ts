@@ -39,22 +39,43 @@ type SummaryFinding = { id: string; title: string };
 type Receipt = { id?: number; continued?: number };
 
 // Version 1 engine summaries render finding sections in report order and may
-// omit a suffix to fit GitHub. Keep unrecognized prose and all unlinked details.
-export function linkedFindingSummary(report: string, findings: SummaryFinding[], deliveries: Record<string, Receipt>, pullUrl: string) {
+// omit a suffix to fit GitHub. Preserve partial or unrecognized sections verbatim.
+export function linkedFindingSummary(report: string, findings: SummaryFinding[], deliveries: Record<string, Receipt>, pullUrl: string, inlineBodies: Record<string, string>) {
   const link = (finding: SummaryFinding, id: number) => {
     const title = finding.title.slice(0, 500).replace(/\s+/g, ' ').replace(/[\\`*_{}\[\]()<>~|@!#&]/g, ch => '&#' + ch.charCodeAt(0) + ';');
     return `- [${title}](${pullUrl}#discussion_r${id})`;
   };
   const linked = new Set<string>();
-  let index = 0;
-  const block = /^#### [^\n]+\n\nLocation: [^\n]+\n\n\*\*Reason:\*\* [^\n]*\n\n\*\*Suggested fix:\*\* [^\n]*\n\n\*\*Verification:\*\* [^\n]*\n\n/gm;
-  let summary = report.replace(block, original => {
-    const finding = findings[index++];
-    const delivery = finding && deliveries[finding.id];
-    if (!delivery || (!delivery.id && !delivery.continued)) return original;
-    linked.add(finding.id);
-    return delivery.continued ? '' : link(finding, delivery.id!) + '\n\n';
-  }).replace(/### Findings\n\n(?=>|\[View the full report|---)/, '');
+  let summary = report;
+  const parts = report.split(/^### Findings\n\n/m);
+  if (parts.length === 2) {
+    const [intro, section] = parts;
+    // The summary has no finding IDs. Require contiguous v1 blocks in report
+    // order and check each heading against the engine's ID-keyed inline body.
+    const block = /#### ([^\n]+)\n\nLocation: [^\n]+\n\n\*\*Reason:\*\* [^\n]*\n\n\*\*Suggested fix:\*\* [^\n]*\n\n\*\*Verification:\*\* [^\n]*\n\n/y;
+    const blocks: string[] = [];
+    const headings = new Set<string>();
+    let end = 0;
+    for (const finding of findings) {
+      const match = block.exec(section);
+      if (!match || headings.has(match[1]) || !inlineBodies[finding.id]?.startsWith(`**${match[1]}**\n\n`)) break;
+      headings.add(match[1]);
+      blocks.push(match[0]);
+      end = block.lastIndex;
+    }
+    const tail = section.slice(end);
+    if (blocks.length === findings.length && /^(?:$|>|\[View the full report|---)/.test(tail)) {
+      const body = blocks.map((original, index) => {
+        const finding = findings[index];
+        const delivery = deliveries[finding.id];
+        if (delivery?.continued) return '';
+        if (!delivery?.id) return original;
+        linked.add(finding.id);
+        return link(finding, delivery.id) + '\n\n';
+      }).join('');
+      summary = intro + (body ? '### Findings\n\n' + body : '') + tail;
+    }
+  }
   for (const continued of [false, true]) {
     const rows = findings.filter(f => continued ? deliveries[f.id]?.continued : deliveries[f.id]?.id && !linked.has(f.id));
     if (!rows.length) continue;

@@ -153,11 +153,31 @@ test('thread lookup selects the earliest open current-line finding by this app o
 
 test('summary links posted finding titles and retains unmatched findings and report notes', () => {
   const findings = [{id:'a',title:'First [item]'}, {id:'b',title:'Second'}];
+  const inlineBodies = Object.fromEntries(findings.map(f => [f.id, `**P2 · ${f.title}**\n\nDetails`]));
   const blocks = findings.map(f => `#### P2 · ${f.title}\n\nLocation: src/main.ts\n\n**Reason:** why ${f.id}\n\n**Suggested fix:** fix\n\n**Verification:** verify\n\n`);
   const body = '### Findings\n\n' + blocks.join('') + '> Verification gap: test\n\nFooter';
-  const summary = linkedFindingSummary(body, findings, {a:{id:123}}, 'https://github.com/org/repo/pull/7');
+  const summary = linkedFindingSummary(body, findings, {a:{id:123}}, 'https://github.com/org/repo/pull/7', inlineBodies);
   assert.ok(summary.includes('[First &#91;item&#93;](https://github.com/org/repo/pull/7#discussion_r123)'));
   assert.ok(!summary.includes('why a')); assert.ok(summary.includes(blocks[1]));
   assert.ok(summary.endsWith('> Verification gap: test\n\nFooter'));
-  assert.equal(linkedFindingSummary(body, findings, {a:{}}, 'unused'), body);
+  const reordered = body.replace(blocks.join(''), [...blocks].reverse().join(''));
+  assert.ok(linkedFindingSummary(reordered, findings, {a:{id:123}}, 'unused', inlineBodies).startsWith(reordered));
+  const ambiguous = reordered.replace('#### P2 · Second', '#### P2 · First [item]');
+  assert.ok(linkedFindingSummary(ambiguous, findings, {a:{id:123}}, 'unused', {a:inlineBodies.a, b:inlineBodies.a}).startsWith(ambiguous));
+  const shortened = '### Findings\n\n' + blocks[0] + '> This comment omits findings';
+  assert.ok(linkedFindingSummary(shortened, findings, {a:{id:123}}, 'unused', inlineBodies).startsWith(shortened));
+  assert.equal(linkedFindingSummary(body, findings, {a:{}}, 'unused', inlineBodies), body);
+});
+
+test('a partially recognized summary cannot transfer an inline receipt to the next finding', () => {
+  const findings = [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }];
+  const inlineBodies = Object.fromEntries(findings.map(f => [f.id, `**P2 · ${f.title}**\n\nDetails`]));
+  const blocks = findings.map(f =>
+    `#### P2 · ${f.title}\n\nLocation: src/main.ts\n\n**Reason:** why ${f.id}\n\n**Suggested fix:** fix\n\n**Verification:** verify\n\n`);
+  const report = '### Findings\n\n' + blocks[0].replace('why first', 'why first\ncontinued') + blocks[1] + '---';
+  for (const receipt of [{ id: 123 }, { continued: 123 }]) {
+    const summary = linkedFindingSummary(report, findings, { first: receipt }, 'https://github.com/org/repo/pull/7', inlineBodies);
+    assert.ok(summary.startsWith(report));
+    assert.ok(summary.includes('[First](https://github.com/org/repo/pull/7#discussion_r123)'));
+  }
 });
