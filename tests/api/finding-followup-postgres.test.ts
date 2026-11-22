@@ -27,12 +27,10 @@ test('follow-up inputs come only from matching saved PR findings and their open 
         await pool.query("INSERT INTO api_engine_job VALUES($1,$2,'2','c','1','completed',$3,$4,$5)",
           [id,org,{number},{head:originalHead,base_ref:base},{findings:[finding]}]);
       }
-      t.mock.method(PullGitHub, 'open', async () => ({
-        findingThreads: async (workflow: string, outdated: boolean) => {
-          assert.equal(workflow, 'wf'); assert.equal(outdated, true);
-          return variants.map(([id], i) => ({ id: i+1, job: id, finding: 'f', path: 'a.ts', body: 'Edited comment text', originalHead }));
-        },
-      }));
+      t.mock.method(PullGitHub, 'readFindingHistory', async (w: Worker, number: number, workflow: string) => {
+        assert.equal(w, worker); assert.equal(number, 7); assert.equal(workflow, 'wf');
+        return variants.map(([id], i) => ({ id: i+1, job: id, finding: 'f', path: 'a.ts', body: 'Edited comment text', originalHead }));
+      });
       assert.deepEqual(await priorFindings(job, worker, new AbortController().signal), [
         { thread:'1', path:'a.ts', title:'Title', reason:'Original issue', suggestion:'Repair' },
       ]);

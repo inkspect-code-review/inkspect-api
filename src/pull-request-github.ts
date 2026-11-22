@@ -24,12 +24,12 @@ export type PullSnapshot = { head: string; base: string; baseRef: string; open: 
 type Comment = { id: number; body: string; user?: { type: string; login?: string }; performed_via_github_app?: { id: number }; issue_url?: string; in_reply_to_id?: number; path?: string; line?: number };
 
 export type FindingThread = { id: number; nodeId?: string; originalHead?: string; outdated?: boolean; job: string; finding: string; path: string; line: number; body: string };
-const threadQuery = `query FindingThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+const threadQuery = `query FindingThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String, $history: Boolean!) {
   repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
     reviewThreads(first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
-      nodes { id isResolved isOutdated diffSide path line originalLine
-        comments(first: 1) { nodes { fullDatabaseId body originalCommit { oid } author { __typename login } replyTo { id } } }
+      nodes { id isResolved isOutdated diffSide path line startLine originalLine originalStartLine
+        comments(first: 1) { nodes { fullDatabaseId body originalCommit @include(if: $history) { oid } author { __typename login } replyTo { id } } }
       }
     }
   } }
@@ -132,16 +132,28 @@ export class PullGitHub {
     return !!this.appSlug && comment.user.login?.toLowerCase() === `${this.appSlug}[bot]`;
   }
   async findingThreads(workflow: string, includeOutdated = false): Promise<FindingThread[]> {
+    if (includeOutdated) return PullGitHub.readFindingHistory(this.worker, this.number, workflow, this.signal);
+    return this.readThreads(workflow, false);
+  }
+  static async readFindingHistory(worker: Worker, number: number, workflow: string, signal: AbortSignal) {
+    // Reading originalCommit requires contents:read even on a PR we can comment on.
+    const access = await repositoryAccess(worker, signal, true, 'read');
+    const reader = new PullGitHub(worker, number, access.token, signal, false, access.appSlug);
+    return reader.readThreads(workflow, true);
+  }
+  private async readThreads(workflow: string, includeOutdated: boolean): Promise<FindingThread[]> {
     const [owner, repo] = this.worker.full_name.split('/');
     const threads: FindingThread[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 100; page++) {
-      const result = await this.githubRequest('/graphql', 'POST', { query: threadQuery, variables: { owner, repo, number: this.number, cursor } });
+      const result = await this.githubRequest('/graphql', 'POST', { query: threadQuery, variables: { owner, repo, number: this.number, cursor, history: includeOutdated } });
       const connection = result.data?.repository?.pullRequest?.reviewThreads;
+      if (result.errors?.some((e: { type?: string }) => e.type === 'FORBIDDEN')) throw new GitHubFailure(403);
       if (result.errors?.length || !Array.isArray(connection?.nodes)) throw new Error('Cannot read PR finding threads');
       for (const thread of connection.nodes) {
         const root = thread.comments.nodes[0];
-        const line = thread.isOutdated ? thread.originalLine : thread.line;
+        // Continuing findings are matched on their first line, including older single-line comments.
+        const line = thread.isOutdated ? thread.originalStartLine ?? thread.originalLine : thread.startLine ?? thread.line;
         if (thread.isResolved || (thread.isOutdated && !includeOutdated) || thread.diffSide !== 'RIGHT' || !Number.isInteger(line) ||
             !root || root.replyTo || root.author?.__typename !== 'Bot' || !this.appSlug || root.author.login.toLowerCase().replace(/\[bot\]$/, '') !== this.appSlug) continue;
         const marker = /^<!-- inkspect:finding:([^:\s]+):([^:\s]+):([^:\s]+) -->\r?\n/.exec(root.body);
@@ -254,4 +266,14 @@ export function patchRightLines(patch: string) {
     if (line.startsWith('+') || line.startsWith(' ')) { lines.add(right); right++; }
   }
   return lines;
+}
+
+// GitHub anchors single-line comments with line, and multiline comments with
+// both ends on the same side of the diff. Keep unanchorable ranges in the summary.
+export function findingAnchor(lines: Set<number> | undefined, location: { start_line: number; end_line?: number }) {
+  const start = location.start_line;
+  const end = location.end_line ?? start;
+  if (!lines || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start >= lines.size) return;
+  for (let line = start; line <= end; line++) if (!lines.has(line)) return;
+  return start === end ? { line: end, side: 'RIGHT' } : { start_line: start, start_side: 'RIGHT', line: end, side: 'RIGHT' };
 }

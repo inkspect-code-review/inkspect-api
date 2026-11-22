@@ -9,7 +9,7 @@ import { ReviewError } from "@inkspect/core/lib/review-access";
 import type { ReportResponse, ReviewJob } from "@inkspect/core/lib/review-types";
 import { database } from "./database";
 import { eligibility, enqueueIndex, lastIndexed, latestIndex, type Worker } from "./repository-store";
-import { CheckUnavailable, PullGitHub, type CheckNotice, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
+import { CheckUnavailable, findingAnchor, PullGitHub, type CheckNotice, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
 import { overviewSeverity, overviewSeverities } from "@inkspect/core/lib/review-overview";
 import { originalThread, linkedFindingSummary } from "./continuing-findings";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
@@ -328,14 +328,17 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     const report = reportBody(result.report);
     const deliveries = s.findings ??= {};
     const lines = await github.changedLines();
-    const inline = result.report.findings.filter(f => lines.get(f.location.path)?.has(f.location.start_line));
-    const pending = inline.filter(f => !deliveries[f.id]);
+    const inline = result.report.findings.flatMap(finding => {
+      const anchor = findingAnchor(lines.get(finding.location.path), finding.location);
+      return anchor ? [{ finding, anchor }] : [];
+    });
+    const pending = inline.filter(({ finding }) => !deliveries[finding.id]);
     const followup: FollowupReport = result.report;
     const resolving = complete && (followup.resolved_findings?.length ?? 0) > 0 &&
       (job.snapshot as { base_ref?: string }).base_ref === current.baseRef && !!current.baseRef;
     const threads = pending.length || resolving ? await github.findingThreads(row.id, resolving) : [];
     const usedThreads = new Set(Object.values(deliveries).map(delivery => delivery.continued));
-    for (const finding of inline) {
+    for (const { finding } of inline) {
       if (!deliveries[finding.id]) {
         const prior = originalThread(threads.filter(thread => !usedThreads.has(thread.id)), job.job.id, finding, findingBody(result.report, finding.id));
         if (prior) usedThreads.add(prior.id);
@@ -346,11 +349,11 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     // must not create a new comment if someone subsequently resolves a thread.
     if (pending.length) await save();
     try {
-      for (const finding of inline) {
+      for (const { finding, anchor } of inline) {
         const delivery = deliveries[finding.id];
         if (delivery.continued) continue;
         await github.deliver(delivery, `<!-- inkspect:finding:${row.id}:${s.job}:${finding.id} -->`, findingBody(result.report, finding.id), 'inline', save, guard,
-          { commit_id: s.head, path: finding.location.path, line: finding.location.start_line, side: 'RIGHT' });
+          { commit_id: s.head, path: finding.location.path, ...anchor });
       }
     } finally {
       // Link only confirmed deliveries. On a rejected/uncertain inline post

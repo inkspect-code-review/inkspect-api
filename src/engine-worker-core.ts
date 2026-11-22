@@ -1,3 +1,4 @@
+import { GitHubFailure } from './pull-request-github';
 import { priorFindings } from './finding-followup';
 import { enqueueAutomaticFixes } from "./engine-auto-fix-core";
 import { scheduleBackgroundWork } from "./engine-background";
@@ -16,7 +17,7 @@ import { createEngineHandler } from "./engine-http-core";
 import { validateHost, schemaName, engineFailure, INVALID_IGNORE } from "./engine-contract";
 import { authorizedWorker, jobClaims, event, type EngineJob } from "./engine-store";
 import { runRust, readJournal } from "./engine-process";
-import { EmptyRepository, repositoryToken, fetchRepositoryRevision } from "./metadata";
+import { EmptyRepository, MetadataFailure, repositoryToken, fetchRepositoryRevision } from "./metadata";
 import type { Worker } from "./repository-store";
 import { connectedRepositories, repositoryIdentity } from "./connected-repositories";
 import { saveReviewModels } from "@inkspect/core/lib/review-models";
@@ -109,9 +110,10 @@ async function runReview(job: EngineJob) {
     const credential = !isFix(job) ? await policy.credential(job) : undefined;
     const result = isFix(job) ? await runFix(policy.fix, job, worker, controller.signal) : await (policy.runRust ?? runRust)('review', job.host_config, { run_id: job.id, tenant_id: job.organization_id, repository_id: job.repository_id,
       owner, repo, pull_number: job.request.number, base_sha: job.snapshot.base, head_sha: job.snapshot.head,
-      prior_findings: await priorFindings(job, worker, controller.signal).catch(() => {
+      prior_findings: await priorFindings(job, worker, controller.signal).catch(error => {
         controller.signal.throwIfAborted();
-        console.warn(JSON.stringify({ event: 'review.prior_findings_unavailable', job: job.id }));
+        console.warn(JSON.stringify({ event: 'review.prior_findings_unavailable', job: job.id,
+          status: error instanceof GitHubFailure || error instanceof MetadataFailure ? error.status : undefined }));
         return [];
       }),
       review_notes: job.request.review_notes || [], auto_review: false, publish_inline_comments: false }, {}, token, job.id, controller.signal, credential);

@@ -18,8 +18,7 @@ export async function priorFindings(job: EngineJob, worker: Worker, signal: Abor
     WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4 AND number=$5`,
     [job.organization_id, job.repository_id, job.connection_id, job.installation_id, job.request.number]);
   if (!result.rows[0]) return [];
-  const github = await PullGitHub.open(worker, job.request.number, signal);
-  const threads = await github.findingThreads(result.rows[0].id, true);
+  const threads = await PullGitHub.readFindingHistory(worker, job.request.number, result.rows[0].id, signal);
   const prior: PriorFinding[] = [];
   const jobs = new Map<string, EngineJob | undefined>();
   for (const thread of threads) {
