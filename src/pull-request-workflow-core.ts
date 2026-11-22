@@ -362,7 +362,11 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
         `https://github.com/${worker.full_name}/pull/${row.number}`, result.report.presentation?.github_findings ?? {}));
     }
     if (resolving) {
-      if (s.resolutionJob !== s.job) { s.resolutionJob = s.job; s.resolutions = {}; }
+      if (s.resolutionJob !== s.job) {
+        s.resolutionJob = s.job;
+        // Keep pending sends across pushes, especially if GitHub lost the POST response.
+        s.resolutions = Object.fromEntries(Object.entries(s.resolutions ?? {}).filter(([, d]) => !d.resolved));
+      }
       await publishResolutions(github, followup, threads, s.resolutions ??= {}, save, guard);
     }
     s.published = s.job; await save();

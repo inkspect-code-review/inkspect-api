@@ -203,3 +203,43 @@ test('GitHub review anchors cover the entire engine range or leave it in the sum
     assert.equal(findingAnchor(lines, { start_line: 263, end_line: end }), undefined);
   }
 });
+
+test('resolution retries across reviews reuse the original app reply without editing or posting again', async () => {
+  const requests: string[] = [];
+  const parent = 29;
+  const marker = (job: string) => `<!-- inkspect:resolution:${job}:${parent} -->`;
+  const original = { id: 90, in_reply_to_id: parent, user: { type: 'Bot' }, performed_via_github_app: { id: 1 },
+    body: marker('old') + '\nOriginal evidence' };
+  const rows = [
+    { ...original, id: 10, performed_via_github_app: { id: 9 } },
+    { ...original, id: 11, in_reply_to_id: 30 },
+    { ...original, id: 12, body: '<!-- inkspect:resolution:old:30 -->\nOther finding' },
+    { ...original, id: 13, body: 'Verified in a different commit' },
+  ];
+  const github: PullGitHub = Object.assign(Object.create(PullGitHub.prototype), {
+    worker: { full_name: 'team/repo', app_id: '1' }, number: 1,
+    list: async () => rows,
+    request: async (path: string, method: string, payload: { body: string }) => {
+      requests.push(method);
+      assert.equal(path, '/repos/team/repo/pulls/1/comments/29/replies');
+      assert.equal(method, 'POST');
+      rows.push({ ...original, body: payload.body });
+      throw Error('lost response');
+    },
+  });
+  const send = (state: Delivery, job: string) => github.deliver(state, marker(job), 'Evidence ' + job,
+    'inline', async () => {}, async () => {}, { reply_to: parent }, 'first-resolution');
+  const pending: Delivery = {};
+  await assert.rejects(send(pending, 'old'), /lost response/);
+  assert.equal(pending.sending, true);
+  const posted = rows.pop()!;
+  await assert.rejects(send(pending, 'next'), /comment_creation_uncertain/);
+  rows.push(posted);
+  const recovered: Delivery[] = [pending, {}, {}];
+  for (const [index, state] of recovered.entries()) {
+    await send(state, 'new-' + index);
+    assert.equal(state.id, original.id);
+    assert.equal(state.body, marker('old') + '\nEvidence old');
+  }
+  assert.deepEqual(requests, ['POST']);
+});

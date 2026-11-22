@@ -206,14 +206,27 @@ export class PullGitHub {
   // The send intent is durable before POST. After a lost response, recover only
   // an app-owned marker on this PR. An uncertain POST is never blindly repeated.
   async deliver(delivery: Delivery, marker: string, body: string, kind: 'issue' | 'inline',
-    save: () => Promise<void>, guard: () => Promise<void>, extra: Record<string, unknown> = {}) {
+    save: () => Promise<void>, guard: () => Promise<void>, extra: Record<string, unknown> = {},
+    mode: 'update' | 'first-resolution' = 'update') {
     const listPath = `${this.root}/${kind === 'issue' ? 'issues' : 'pulls'}/${this.number}/comments`;
     const itemPath = `${this.root}/${kind === 'issue' ? 'issues' : 'pulls'}/comments`;
+    // A verification reply records the first review that confirmed the repair.
+    // Later jobs may retry the resolve mutation but must preserve that evidence.
+    const once = mode === 'first-resolution';
+    if (once && (kind !== 'inline' || !Number.isSafeInteger(extra.reply_to))) throw new Error('Missing resolution thread');
+    if (once && delivery.id) return;
     if (!delivery.id) {
       const rows: Comment[] = await this.list(listPath);
-      const old = rows.find(row => this.owns(row) && row.body?.startsWith(marker + '\n'));
-      if (old) { delivery.id = old.id; delivery.body = old.body; delivery.sending = false; await save(); }
-      else if (delivery.sending) throw new Error('comment_creation_uncertain');
+      const old = rows.find(row => {
+        if (!this.owns(row)) return false;
+        if (!once) return row.body?.startsWith(marker + '\n');
+        const match = /^<!-- inkspect:resolution:[^:\s]+:(\d+) -->\r?\n/.exec(row.body);
+        return row.in_reply_to_id === extra.reply_to && match?.[1] === String(extra.reply_to);
+      });
+      if (old) {
+        delivery.id = old.id; delivery.body = old.body; delivery.sending = false; await save();
+        if (once) return;
+      } else if (delivery.sending) throw new Error('comment_creation_uncertain');
     }
     const content = `${marker}\n${body}`;
     if (delivery.id) {

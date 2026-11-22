@@ -85,7 +85,7 @@ export async function publishResolutions(github: PullGitHub, report: FollowupRep
     const evidence = `https://github.com/${repo}/blob/${head}/${path}#L${resolution.line}`;
     const body = `Verified in \`${head.slice(0, 12)}\`. ${markdownText(resolution.explanation)}\n\n[View the reviewed change](${evidence})`;
     await guard();
-    await github.deliver(delivery, `<!-- inkspect:resolution:${report.run.id}:${thread.id} -->`, body, 'inline', save, guard, { reply_to: thread.id });
+    await github.deliver(delivery, `<!-- inkspect:resolution:${report.run.id}:${thread.id} -->`, body, 'inline', save, guard, { reply_to: thread.id }, 'first-resolution');
     await guard();
     await github.resolveFindingThread(thread.nodeId);
     delivery.resolved = true;

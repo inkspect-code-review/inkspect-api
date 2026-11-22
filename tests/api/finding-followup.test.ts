@@ -21,7 +21,8 @@ function fixture() {
         { filename: 'file.ts', patch: '@@ -4,2 +4,2 @@\n same\n-before\n+after' },
       ] };
     },
-    async deliver(d: ResolutionDelivery, marker: string, body: string, kind: string, _save: unknown, _guard: unknown, extra: unknown) {
+    async deliver(d: ResolutionDelivery, marker: string, body: string, kind: string, _save: unknown, _guard: unknown, extra: unknown, mode: string) {
+      assert.equal(mode, 'first-resolution');
       assert.equal(kind, 'inline'); assert.deepEqual(extra, { reply_to: 12 });
       assert.equal(marker, '<!-- inkspect:resolution:new:12 -->');
       assert.ok(body.includes(resolution.explanation));
