@@ -14,6 +14,8 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 #### Fixed
 
+- Open a fresh GitHub check for each re-run and explain when a review reaches its inference budget.
+- Allow the host to configure separate budgets for managed reviews and other operations.
 - Reuse the first verification reply on a finding thread when a later review retries closing it.
 
 - Publish the full finding range on GitHub when its lines are visible in the PR diff.

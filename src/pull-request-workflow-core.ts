@@ -13,7 +13,7 @@ import { CheckUnavailable, findingAnchor, PullGitHub, type CheckNotice, type Del
 import { overviewSeverity, overviewSeverities } from "@inkspect/core/lib/review-overview";
 import { originalThread, linkedFindingSummary } from "./continuing-findings";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
-import { INVALID_IGNORE } from "./engine-contract";
+import { INVALID_IGNORE, REVIEW_BUDGET_LIMIT, reviewBudgetNotice } from "./engine-contract";
 import { appLogin } from "./pull-request-events";
 import { isIgnoredAuthor, checkThresholds, type CheckThreshold } from "./review-settings";
 
@@ -72,7 +72,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   const blockedCheck = async (identity: string, notice: CheckNotice) => {
     if (s.check?.job !== identity) {
       const previous = s.reuseCheck && s.check?.head === current.head ? s.check : undefined;
-      s.check = { job: identity, head: current.head, threshold: previous?.threshold ?? worker.check_threshold ?? 'P0', id: previous?.id };
+      s.check = { job: identity, head: current.head, threshold: previous?.threshold ?? worker.check_threshold ?? 'P0' };
       await save();
     }
     try { await syncCheck(s.check, 'unavailable', guard, notice); }
@@ -156,7 +156,9 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     }
     if (rerequest && requested) {
       s.lastCheckDelivery = requested.delivery;
-      delete s.check.phase;
+      // A webhook replay must find this attempt even if the GitHub POST succeeded
+      // before its receipt was saved. The source check ID is stable per re-run.
+      s.check = { job: job?.job.id ?? s.check.job, head: current.head, threshold: s.check.threshold, attempt: requested.check };
       if (job && ['failed', 'cancelled'].includes(job.job.status)) {
         s.rerun = job.job.id; delete s.job; job = undefined; s.findings = {};
       }
@@ -288,16 +290,15 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   // Receipts from before configurable thresholds used P0.
   const threshold = s.check && (s.check.job === s.job || s.reuseCheck) ? s.check.threshold ?? 'P0' : worker.check_threshold ?? 'P0';
   let retryCheck = false;
-  const reviewCheck = async (phase: CheckPhase) => {
+  const reviewCheck = async (phase: CheckPhase, notice?: CheckNotice) => {
     if (!github.checksEnabled) return;
     if (!s.job || job?.job.id !== s.job || s.head !== current.head || s.base !== current.base) throw new Error('Review check target mismatch');
     if (s.check?.job !== s.job) {
-      s.check = { job: s.job, head: current.head, threshold,
-        ...(s.reuseCheck && s.check?.head === current.head ? { id: s.check.id } : {}) };
+      s.check = { job: s.job, head: current.head, threshold };
       await save();
     }
     delete s.reuseCheck;
-    try { await syncCheck(s.check, phase, guard); }
+    try { await syncCheck(s.check, phase, guard, notice); }
     catch (error) {
       if (!(error instanceof CheckUnavailable)) throw error;
       // Comment delivery and settlement can proceed while the Checks API retries.
@@ -374,9 +375,10 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : retryCheck ? 30_000 : null;
   }
   if (terminal(job.job.status)) {
-    await reviewCheck(job.job.status === 'cancelled' ? 'cancelled' : 'failed');
+    const notice = job.job.status === 'failed' && job.job.error_code === REVIEW_BUDGET_LIMIT ? reviewBudgetNotice : undefined;
+    await reviewCheck(job.job.status === 'cancelled' ? 'cancelled' : 'failed', notice);
     // Rules come from the pull request's base, so the fix has to land there first.
-    await publish(job.job.status === 'failed' && job.job.error_code === INVALID_IGNORE
+    await publish(notice ? `## Inkspect · ${notice.title}\n\n${notice.summary}` : job.job.status === 'failed' && job.job.error_code === INVALID_IGNORE
       ? `## Inkspect · Review failed\n\nThe \`.inkspectignore\` file on the base branch is invalid, so the review did not run. Fix it on the base branch, update this pull request from that branch, then comment \`${reviewCommand}\`. See ${ignoreDocs}.`
       : `## Inkspect · Review ${job.job.status === 'cancelled' ? 'cancelled' : 'failed'}\n\nThe review did not finish. Check the [review in Inkspect](${reviewLink(s.job)}), then comment \`${reviewCommand}\` to retry.`);
     return deferred || messages.some(m => m.state.requested && !m.state.done && !m.state.ignored) ? 1000 : retryCheck ? 30_000 : null;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { signEngineRequest } from "@inkspect/core/lib/engine-client";
-import { verifyRequest, validateReview, validateHost, usageReceipt, schemaName, jobID, type HostConfig } from "../../src/engine-contract";
+import { engineFailure, verifyRequest, validateReview, validateHost, usageReceipt, schemaName, jobID, type HostConfig } from "../../src/engine-contract";
 
 const host: HostConfig = { model_id: 'test.model', model_region: 'eu-west-2', model_max_output_tokens: 100,
   timeout_seconds: 60, input_nano_usd: 2, output_nano_usd: 5, budget_nano_usd: 1000,
@@ -44,4 +44,9 @@ test('queue identifiers cannot escape SQL and repeated admissions have stable id
   assert.throws(() => schemaName('tenant";DROP TABLE jobs;--'));
   assert.equal(schemaName('rust_repo_ab12'), '"rust_repo_ab12"');
   assert.equal(jobID('one'), jobID('one')); assert.notEqual(jobID('one'), jobID('two'));
+});
+
+test('recognizes the review budget failure separately from other model failures', () => {
+  assert.equal(engineFailure([{kind: 'engine.failed', code: 'review.budget_limit'}]), 'review.budget_limit');
+  assert.equal(engineFailure([{kind: 'engine.failed', code: 'model.failed'}]), undefined);
 });

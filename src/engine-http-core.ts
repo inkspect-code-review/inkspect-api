@@ -14,6 +14,7 @@ import { chatIndexRequirement } from "./chat-index-state";
 
 export function createEngineHandler(host: HostConfig, ready: () => object | null, track: <T>(work: () => Promise<T>) => Promise<T>,
   policy: EngineHttpPolicy, dependencies = { runRust }) {
+  const reviewHost = policy.reviewBudgetNanoUsd === undefined ? host : { ...host, budget_nano_usd: policy.reviewBudgetNanoUsd };
   return async (req: IncomingMessage, res: ServerResponse) => {
     const json = (value: unknown, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
     try {
@@ -51,7 +52,7 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
       }
       if (url.pathname === '/github/repositories' && req.method === 'GET') {
         return json({ repositories: [{ id: claims.repository, full_name: worker.full_name, private: true }],
-          ...policy.configuration(host), execution_mode: 'api', engine: 'rust' });
+          ...policy.configuration(reviewHost), execution_mode: 'api', engine: 'rust' });
       }
       const pullTitle = /^\/github\/pulls\/([1-9]\d*)\/title$/.exec(url.pathname);
       if (pullTitle && req.method === 'GET') {
@@ -110,7 +111,7 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
           await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`engine-admit:${identity}`]);
           await tx.query(`INSERT INTO api_engine_job(id,request_id,organization_id,repository_id,connection_id,installation_id,subject,request,snapshot,host_config)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(request_id) DO NOTHING`,
-          [id, identity, claims.tenant, worker.repository_id, claims.connection, claims.installation, claims.subject, body, snapshot, host]);
+          [id, identity, claims.tenant, worker.repository_id, claims.connection, claims.installation, claims.subject, body, snapshot, body.byok ? host : reviewHost]);
           await policy.attach(admission, id, tx);
           await tx.query('COMMIT');
         } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }

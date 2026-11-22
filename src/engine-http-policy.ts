@@ -7,6 +7,7 @@ import type { Worker } from "./repository-store";
 export type EngineScope = Omit<EngineClaims, 'expires'>;
 export type RetrievalScope = { organization: string; user: string; repository: string; operation: string };
 export interface EngineHttpPolicy {
+  reviewBudgetNanoUsd?: number;
   configuration(host: HostConfig): Record<string, unknown>;
   admission(input: ReviewIdentityInput): Promise<{ job_id: string | null }>;
   attach(input: ReviewIdentityInput, jobId: string, tx: PoolClient): Promise<void>;

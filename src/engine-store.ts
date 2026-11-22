@@ -1,10 +1,11 @@
 import { database } from "./database";
 import type { Worker } from "./repository-store";
-import { INVALID_IGNORE, schemaName } from "./engine-contract";
+import { INVALID_IGNORE, REVIEW_BUDGET_LIMIT, reviewBudgetNotice, schemaName } from "./engine-contract";
 import { diagnosticMessage } from "./engine-diagnostics";
 
 // Failures users can fix themselves; every other code stays a generic failure.
 const failureMessages: Record<string, string> = {
+  [REVIEW_BUDGET_LIMIT]: reviewBudgetNotice.summary,
   [INVALID_IGNORE]: 'The .inkspectignore file on the base branch is invalid, so the review did not run. Fix it on the base branch, then update the pull request from that branch.',
 };
 

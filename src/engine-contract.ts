@@ -59,11 +59,17 @@ export function validateReview(body: Record<string, any>, host: HostConfig) {
 }
 /** The repository's .inkspectignore is invalid; the engine fails closed before any model call. */
 export const INVALID_IGNORE = 'source.invalid_ignore';
+export const REVIEW_BUDGET_LIMIT = 'review.budget_limit';
+export const reviewBudgetNotice = {
+  title: 'Review budget reached',
+  summary: 'The next model call would exceed the budget for this review. Split the pull request into smaller changes and run the review again.',
+};
 /** An engine failure code the product explains. The engine journals its stable code on exit because stderr is discarded. */
-export function engineFailure(events: any[]): typeof INVALID_IGNORE | typeof FIX_VERIFICATION_FAILED | typeof FIX_NO_SAFE_REPAIR | undefined {
+export function engineFailure(events: any[]): typeof INVALID_IGNORE | typeof REVIEW_BUDGET_LIMIT | typeof FIX_VERIFICATION_FAILED | typeof FIX_NO_SAFE_REPAIR | undefined {
   if (events.some(e => e?.kind === 'engine.failed' && e.code === FIX_NO_SAFE_REPAIR)) return FIX_NO_SAFE_REPAIR;
   if (events.some(e => e?.kind === 'engine.failed' && e.code === FIX_VERIFICATION_FAILED)
     || (events.some(e => e.kind === 'fix.verification.started') && !events.some(e => e.kind === 'fix.verification.passed'))) return FIX_VERIFICATION_FAILED;
+  if (events.some(e => e?.kind === 'engine.failed' && e.code === REVIEW_BUDGET_LIMIT)) return REVIEW_BUDGET_LIMIT;
   return events.some(e => e?.kind === 'engine.failed' && e.code === INVALID_IGNORE) ? INVALID_IGNORE : undefined;
 }
 export function usageReceipt(events: any[], host: HostConfig, maximumCalls = 1) {

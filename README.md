@@ -37,4 +37,4 @@ for help, and report vulnerabilities privately using [SECURITY.md](SECURITY.md).
 
 ### GitHub check re-runs
 
-Subscribe the GitHub App to **Check run** events and grant **Checks: write**. Re-run reuses a matching review or schedules another attempt for an eligible pull request. The check conclusion follows the configured severity threshold and report coverage.
+Subscribe the GitHub App to **Check run** events and grant **Checks: write**. Re-run reuses a matching review or schedules another attempt for an eligible pull request. Each re-run creates a separate check. If the next model call would exceed the review budget, the check explains why the review stopped. The check conclusion follows the configured severity threshold and report coverage.

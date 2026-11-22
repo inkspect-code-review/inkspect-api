@@ -75,7 +75,7 @@ async function provision(register: boolean) {
     }
     await saveReviewModels({ tenant: repo.organization, connection: repo.connection, installation: repo.installation, repository: repo.repository }, origin,
       { default_model_id: host.model_id, region: host.model_region, checked_at: new Date().toISOString(), models: [{ id: host.model_id, name: host.model_id,
-        provider: 'bedrock', routing: 'global', available: true, input_nano_usd: host.input_nano_usd, output_nano_usd: host.output_nano_usd, budget_nano_usd: host.budget_nano_usd }] }, database());
+        provider: 'bedrock', routing: 'global', available: true, input_nano_usd: host.input_nano_usd, output_nano_usd: host.output_nano_usd, budget_nano_usd: policy.http.reviewBudgetNanoUsd ?? host.budget_nano_usd }] }, database());
   }
 }
 async function runReview(job: EngineJob) {
