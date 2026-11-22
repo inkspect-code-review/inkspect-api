@@ -134,6 +134,7 @@
     "./migrations/self-hosted/003_provider_settings.sql": "./migrations/self-hosted/003_provider_settings.sql",
     "./migrations/self-hosted/004_review_execution.sql": "./migrations/self-hosted/004_review_execution.sql",
     "./migrations/self-hosted/005_provider_usage.sql": "./migrations/self-hosted/005_provider_usage.sql",
+    "./migrations/self-hosted/006_account_email_preferences.sql": "./migrations/self-hosted/006_account_email_preferences.sql",
     "./migrate": "./src/migrate.ts"
   },
   "scripts": {

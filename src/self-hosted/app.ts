@@ -1,3 +1,4 @@
+import { accountSettings } from "./account-settings";
 import { createApplication } from "../app-core";
 import type { Auth } from "@inkspect/core/lib/github";
 import { applicationPool } from "@inkspect/core/lib/application-database";
@@ -19,8 +20,13 @@ export function createSelfHostedApp(options: { origin: string; pool?: ReturnType
   const providers = selfHostedProviders(pool);
   const lifecycle = selfHostedReviewLifecycle(pool);
   const reply = createSelfHostedChatReply(pool);
+  const auth = options.auth ?? getSelfHostedAuth;
   return createApplication({ origin: options.origin, edition: {
-    auth: options.auth ?? getSelfHostedAuth,
+    auth,
+    extensions: {
+      "/api/account/devices": request => accountSettings(request, auth(), pool, "devices"),
+      "/api/account/notifications": request => accountSettings(request, auth(), pool, "notifications"),
+    },
     membership: selfHostedMembership(pool),
     reviews: (request, auth) => handleReviews(request, auth, engineRequest, lifecycle, scope => storedReviewModels(scope, pool), providers.state),
     byok: (request, auth) => handleByokSettings(request, auth, providers),
