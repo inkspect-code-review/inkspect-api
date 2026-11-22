@@ -34,3 +34,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, commit notation and
 opening a pull request. All changes need an entry in [CHANGELOG.md](CHANGELOG.md).
 Follow our [Code of Conduct](CODE_OF_CONDUCT.md), use [SUPPORT.md](SUPPORT.md)
 for help, and report vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
+### GitHub check re-runs
+
+Subscribe the GitHub App to **Check run** events and grant **Checks: write**. Re-run reuses a matching review or schedules another attempt for an eligible pull request. The check conclusion follows the configured severity threshold and report coverage.

@@ -1,3 +1,5 @@
+import { matchingGithubReview } from './github-check-reconciliation';
+import { publishResolutions, type FollowupReport, type ResolutionDelivery } from './finding-followup';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { engineRequest } from "@inkspect/core/lib/engine-client";
@@ -7,9 +9,9 @@ import { ReviewError } from "@inkspect/core/lib/review-access";
 import type { ReportResponse, ReviewJob } from "@inkspect/core/lib/review-types";
 import { database } from "./database";
 import { eligibility, enqueueIndex, lastIndexed, latestIndex, type Worker } from "./repository-store";
-import { CheckUnavailable, PullGitHub, type CheckNotice, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
+import { CheckUnavailable, findingAnchor, PullGitHub, type CheckNotice, type Delivery, type ReviewCheck, type CheckPhase } from "./pull-request-github";
 import { overviewSeverity, overviewSeverities } from "@inkspect/core/lib/review-overview";
-import { originalThread, continuingSummary } from "./continuing-findings";
+import { originalThread, linkedFindingSummary } from "./continuing-findings";
 import { findingBody, reportBody, safeText } from "./pull-request-report";
 import { INVALID_IGNORE } from "./engine-contract";
 import { appLogin } from "./pull-request-events";
@@ -22,9 +24,10 @@ export type ReviewNote = { author: string; body: string };
 // published: the completed job whose report is already on the pull request.
 export type WorkflowState = { head?: string; base?: string; index?: string; job?: string; rerun?: string; stopped?: boolean;
   check?: ReviewCheck; eyes?: boolean; summary?: Delivery; findings?: Record<string, Delivery & { continued?: number }>; error?: string;
-  notes?: ReviewNote[]; admitting?: boolean; published?: string };
+  resolutions?: Record<string, ResolutionDelivery>; resolutionJob?: string;
+  lastCheckDelivery?: string; reuseCheck?: boolean; notes?: ReviewNote[]; admitting?: boolean; published?: string };
 export type Workflow = { id: string; organization_id: string; repository_id: string; connection_id: string;
-  installation_id: string; number: number; state: WorkflowState };
+  installation_id: string; number: number; github_rerequest?: { delivery: string; check: number; head: string; base: string; sender: string }; state: WorkflowState };
 type Binding = Worker & { subject: string; automatic: boolean; check_threshold?: CheckThreshold; ignored_authors?: string[] };
 type Message = { comment_id: string; kind: 'issue' | 'inline'; sender: string; intent: 'review' | 'explain'; reply_to: string | null;
   note?: string | null; state: { ignored?: boolean; eyes?: boolean; requested?: boolean; job?: string; done?: boolean; delivery?: Delivery } };
@@ -35,6 +38,7 @@ const fitsNotes = (notes: ReviewNote[], note: ReviewNote) =>
 
 const commonServices = { engineRequest, admitIndex, eligibility, enqueueIndex, lastIndexed, latestIndex };
 export type WorkflowServices = typeof commonServices & { reviewLifecycle: ReviewLifecycle; pausedLabel: string; admissionHelp: string;
+  matchingReview?: (row: Workflow, head: string, base: string, baseRef: string, rerequest: boolean) => Promise<string | undefined>;
   admissionBlock?: (error: unknown) => CheckNotice | undefined;
   waitingBlock?: (row: Workflow, job: ReviewJob) => Promise<CheckNotice | undefined>;
 };
@@ -67,7 +71,8 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   };
   const blockedCheck = async (identity: string, notice: CheckNotice) => {
     if (s.check?.job !== identity) {
-      s.check = { job: identity, head: current.head, threshold: worker.check_threshold ?? 'P0' };
+      const previous = s.reuseCheck && s.check?.head === current.head ? s.check : undefined;
+      s.check = { job: identity, head: current.head, threshold: previous?.threshold ?? worker.check_threshold ?? 'P0', id: previous?.id };
       await save();
     }
     try { await syncCheck(s.check, 'unavailable', guard, notice); }
@@ -98,7 +103,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     await guardBinding();
     const live = await github.snapshot();
     if (isIgnoredAuthor(live.author, worker.ignored_authors)) throw new ReviewError(409, 'Pull request author is ignored.');
-    if (live.head !== current.head || live.base !== current.base || live.open !== current.open || live.draft !== current.draft) throw new Error('Pull request changed');
+    if (live.head !== current.head || live.base !== current.base || live.baseRef !== current.baseRef || live.open !== current.open || live.draft !== current.draft) throw new Error('Pull request changed');
   };
   const publish = async (body: string) => {
     s.summary ??= {};
@@ -130,12 +135,35 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     }
     // Notes that have not reached a review yet apply to the new commit's review.
     s.head = current.head; s.base = current.base; delete s.job; delete s.rerun; delete s.index; s.findings = {}; delete s.error;
-    delete s.admitting; delete s.published;
+    delete s.admitting; delete s.published; delete s.reuseCheck;
     await save();
   }
   if (!s.eyes) { await guard(); await github.eyes(); s.eyes = true; await save(); }
   if (!s.summary?.id) await publish(`## Inkspect · Review queued\n\n👀 Preparing repository context for commit \`${s.head}\`.`);
   let job: ReviewJob | undefined = s.job ? await send(`/jobs/${s.job}`) : undefined;
+  const requested = row.github_rerequest;
+  const rerequest = !!(requested && requested.delivery !== s.lastCheckDelivery && requested.head === current.head && requested.base === current.base &&
+    requested.check === s.check?.id && worker.automatic && await github.canReview(requested.sender));
+  if (s.check?.head === current.head && (s.job || rerequest || (!s.rerun && !s.notes?.length)) && !s.admitting) {
+    const matching = await services.matchingReview?.(row, current.head, current.base, current.baseRef, rerequest);
+    if (matching && matching !== s.job) {
+      const replacement: ReviewJob = await send(`/jobs/${matching}`);
+      if (replacement.job.id !== matching || replacement.snapshot.head !== current.head ||
+          replacement.snapshot.base_tip !== current.base || replacement.snapshot.repository_id !== row.repository_id)
+        throw new Error('Review reconciliation scope mismatch');
+      job = replacement; s.job = matching; s.findings = {}; delete s.published;
+      s.reuseCheck = true;
+    }
+    if (rerequest && requested) {
+      s.lastCheckDelivery = requested.delivery;
+      delete s.check.phase;
+      if (job && ['failed', 'cancelled'].includes(job.job.status)) {
+        s.rerun = job.job.id; delete s.job; job = undefined; s.findings = {};
+      }
+      s.reuseCheck = true;
+    }
+    if (rerequest || matching && s.reuseCheck) await save();
+  }
   if (s.stopped && worker.automatic) {
     if (job && ['cancelled', 'failed'].includes(job.job.status)) {
       await stopCheck();
@@ -160,7 +188,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
         message.kind, () => saveMessage(message), guard, thread ? { reply_to: thread } : {});
     };
     if (message.intent === 'explain') {
-      const explanation = parent?.body?.replace(/^<!--[^\n]*-->\n/, '').split(/\n\n(?:Reply “fixed”|Comment `@)/)[0];
+      const explanation = parent?.body?.replace(/^<!--[^\n]*-->\n/, '').split(/\n\n(?:Reply “fixed”|Comment `@|New pushes trigger an automatic review)/)[0];
       await reply(explanation ? `The evidence and suggested change for this finding are:\n\n${explanation}\n\nPush a fix and comment \`${reviewCommand}\` to have it checked against the latest code.` : `I review new pushes and keep the first comment up to date. Comment \`${reviewCommand}\` to request another review. Include @${appLogin()} when addressing me in a finding thread.`);
       message.state.done = true; await saveMessage(message); continue;
     }
@@ -239,7 +267,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     s.admitting = true; await save();
     try {
       job = await services.reviewLifecycle.start({ organizationId: row.organization_id, userId: worker.subject, member: { role: 'member' }, connections: [] },
-        { repository_id: Number(row.repository_id), number: row.number, base_tip: s.base, head: s.head, ...(s.rerun ? { rerun_of: s.rerun } : {}),
+        { repository_id: Number(row.repository_id), number: row.number, base_tip: s.base, head: s.head, ...(s.rerun ? (s.reuseCheck ? { retry_of: s.rerun } : { rerun_of: s.rerun }) : {}),
           ...(s.notes?.length ? { review_notes: s.notes } : {}) }, claims, services.engineRequest);
       if (!job || !/^J-[a-f0-9]{32}$/.test(job.job.id)) throw new Error('Invalid review receipt');
       s.job = job.job.id; delete s.admitting; delete s.notes; await save();
@@ -258,15 +286,17 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   if (!job) throw new Error('Missing review job');
   // Each check keeps its original policy across polling, retries and later settings edits.
   // Receipts from before configurable thresholds used P0.
-  const threshold = s.check && s.check.job === s.job ? s.check.threshold ?? 'P0' : worker.check_threshold ?? 'P0';
+  const threshold = s.check && (s.check.job === s.job || s.reuseCheck) ? s.check.threshold ?? 'P0' : worker.check_threshold ?? 'P0';
   let retryCheck = false;
   const reviewCheck = async (phase: CheckPhase) => {
     if (!github.checksEnabled) return;
     if (!s.job || job?.job.id !== s.job || s.head !== current.head || s.base !== current.base) throw new Error('Review check target mismatch');
     if (s.check?.job !== s.job) {
-      s.check = { job: s.job, head: current.head, threshold };
+      s.check = { job: s.job, head: current.head, threshold,
+        ...(s.reuseCheck && s.check?.head === current.head ? { id: s.check.id } : {}) };
       await save();
     }
+    delete s.reuseCheck;
     try { await syncCheck(s.check, phase, guard); }
     catch (error) {
       if (!(error instanceof CheckUnavailable)) throw error;
@@ -298,29 +328,46 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     const report = reportBody(result.report);
     const deliveries = s.findings ??= {};
     const lines = await github.changedLines();
-    const inline = result.report.findings.filter(f => lines.get(f.location.path)?.has(f.location.start_line));
-    const pending = inline.filter(f => !deliveries[f.id]);
-    const threads = pending.length ? await github.findingThreads(row.id) : [];
+    const inline = result.report.findings.flatMap(finding => {
+      const anchor = findingAnchor(lines.get(finding.location.path), finding.location);
+      return anchor ? [{ finding, anchor }] : [];
+    });
+    const pending = inline.filter(({ finding }) => !deliveries[finding.id]);
+    const followup: FollowupReport = result.report;
+    const resolving = complete && (followup.resolved_findings?.length ?? 0) > 0 &&
+      (job.snapshot as { base_ref?: string }).base_ref === current.baseRef && !!current.baseRef;
+    const threads = pending.length || resolving ? await github.findingThreads(row.id, resolving) : [];
     const usedThreads = new Set(Object.values(deliveries).map(delivery => delivery.continued));
-    const continuing = [];
-    for (const finding of inline) {
+    for (const { finding } of inline) {
       if (!deliveries[finding.id]) {
         const prior = originalThread(threads.filter(thread => !usedThreads.has(thread.id)), job.job.id, finding, findingBody(result.report, finding.id));
         if (prior) usedThreads.add(prior.id);
         deliveries[finding.id] = prior ? { continued: prior.id } : {};
       }
-      const thread = deliveries[finding.id].continued;
-      if (thread) continuing.push({ title: finding.title, thread });
     }
     // Freeze the publication plan before the first write. Replaying this job
     // must not create a new comment if someone subsequently resolves a thread.
     if (pending.length) await save();
-    await publish(continuingSummary(report, continuing, `https://github.com/${worker.full_name}/pull/${row.number}`));
-    for (const finding of inline) {
-      const delivery = deliveries[finding.id];
-      if (delivery.continued) continue;
-      await github.deliver(delivery, `<!-- inkspect:finding:${row.id}:${s.job}:${finding.id} -->`, findingBody(result.report, finding.id), 'inline', save, guard,
-        { commit_id: s.head, path: finding.location.path, line: finding.location.start_line, side: 'RIGHT' });
+    try {
+      for (const { finding, anchor } of inline) {
+        const delivery = deliveries[finding.id];
+        if (delivery.continued) continue;
+        await github.deliver(delivery, `<!-- inkspect:finding:${row.id}:${s.job}:${finding.id} -->`, findingBody(result.report, finding.id), 'inline', save, guard,
+          { commit_id: s.head, path: finding.location.path, ...anchor });
+      }
+    } finally {
+      // Link only confirmed deliveries. On a rejected/uncertain inline post
+      // the summary still contains the full finding while the worker retries.
+      await publish(linkedFindingSummary(report, result.report.findings, deliveries,
+        `https://github.com/${worker.full_name}/pull/${row.number}`, result.report.presentation?.github_findings ?? {}));
+    }
+    if (resolving) {
+      if (s.resolutionJob !== s.job) {
+        s.resolutionJob = s.job;
+        // Keep pending sends across pushes, especially if GitHub lost the POST response.
+        s.resolutions = Object.fromEntries(Object.entries(s.resolutions ?? {}).filter(([, d]) => !d.resolved));
+      }
+      await publishResolutions(github, followup, threads, s.resolutions ??= {}, save, guard);
     }
     s.published = s.job; await save();
     // One more pass completes acknowledgments and starts any waiting request.
@@ -369,9 +416,9 @@ export async function processPullRequest(signal: AbortSignal, services: Workflow
       const lock = `pr-workflow:${candidate.id}`;
       if (!(await tx.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS acquired', [lock])).rows[0].acquired) continue;
       locked = lock;
+      const started = (await tx.query('SELECT clock_timestamp()::text AS at')).rows[0].at;
       const row = (await tx.query<Workflow>('SELECT * FROM api_pull_request_workflow WHERE id=$1 AND next_run_at<=now()', [candidate.id])).rows[0];
       if (!row) { await tx.query('SELECT pg_advisory_unlock(hashtextextended($1,0))', [lock]); locked = undefined; continue; }
-      const started = (await tx.query('SELECT clock_timestamp() AS at')).rows[0].at;
       const save = async () => { await tx.query('UPDATE api_pull_request_workflow SET state=$2,updated_at=clock_timestamp() WHERE id=$1', [row.id, JSON.stringify(row.state)]); };
       let delay: number | null = 15_000;
       try {
@@ -388,7 +435,13 @@ export async function processPullRequest(signal: AbortSignal, services: Workflow
           const github = await PullGitHub.open(worker, row.number, AbortSignal.any([signal, abort.signal, AbortSignal.timeout(120_000)]), false, true);
           const messages = (await tx.query<Message>(`SELECT * FROM api_pull_request_message WHERE workflow_id=$1 AND NOT coalesce((state->>'done')::boolean,false) AND NOT coalesce((state->>'ignored')::boolean,false) ORDER BY created_at LIMIT 50`, [row.id])).rows;
           const saveMessage = async (m: Message) => { await tx.query('UPDATE api_pull_request_message SET state=$4 WHERE workflow_id=$1 AND kind=$2 AND comment_id=$3', [row.id, m.kind, m.comment_id, JSON.stringify(m.state)]); };
-          delay = await advancePull(row, worker, github, save, guard, messages, saveMessage, services);
+          delay = await advancePull(row, worker, github, save, guard, messages, saveMessage, { ...services,
+            matchingReview: (scope, head, base, baseRef, rerequest) => matchingGithubReview(tx, scope, head, base, baseRef, rerequest),
+          });
+          if (row.github_rerequest) {
+            await tx.query('UPDATE api_pull_request_workflow SET github_rerequest=NULL WHERE id=$1 AND github_rerequest=$2',
+              [row.id, row.github_rerequest]);
+          }
           delete row.state.error;
         }
       } catch (error) {

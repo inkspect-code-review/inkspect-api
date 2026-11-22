@@ -1,10 +1,11 @@
+import { linkedFindingSummary } from '../../src/continuing-findings';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PullGitHub, type Delivery, type ReviewCheck } from "../../src/pull-request-github";
+import { findingAnchor, patchRightLines, PullGitHub, type Delivery, type ReviewCheck } from "../../src/pull-request-github";
 import type { Worker } from "../../src/repository-store";
 
 test('GitHub comment delivery recovers an ambiguous POST, reuses its ID and refuses foreign comments', async t => {
@@ -122,19 +123,31 @@ test('check delivery recovers a lost create receipt and updates the app-owned ch
 });
 
 test('thread lookup selects the earliest open current-line finding by this app on this PR', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'inkspect-history-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const privateKey = join(directory, 'test.pem');
+  await writeFile(privateKey, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
   const method = PullGitHub.prototype.findingThreads;
   const github = Object.assign(Object.create(PullGitHub.prototype), {
-    worker: { full_name: 'team/repo' }, number: 7, appSlug: 'review-app', signal: new AbortController().signal,
+    worker: { full_name: 'team/repo', app_id: '1', installation_id: '44', repository_id: '17', private_key_file: privateKey }, number: 7, appSlug: 'review-app', signal: new AbortController().signal,
   });
   const root = { body: '<!-- inkspect:finding:workflow:old-job:old-id -->\nFirst finding', fullDatabaseId: '4500000001', replyTo: null, author: { __typename: 'Bot', login: 'review-app' } };
-  const thread = { path: 'manifest.json', line: 265, diffSide: 'RIGHT', isOutdated: false, isResolved: false, comments: { nodes: [root] } };
-  let pages = 0;
+  const thread = { id: 'current', path: 'manifest.json', line: 269, startLine: 263, diffSide: 'RIGHT', isOutdated: false, isResolved: false, comments: { nodes: [root] } };
+  let pages = 0, history = false;
   t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    if (url.endsWith('/installation')) return Response.json({ id: 44, app_id: 1, app_slug: 'review-app' });
+    if (url.endsWith('/access_tokens')) {
+      assert.deepEqual(JSON.parse(String(init.body)), { repository_ids: [17], permissions: { metadata: 'read', contents: 'read', pull_requests: 'read' } });
+      return Response.json({ token: 'history-fixture', repositories: [{id: 17}] });
+    }
     assert.equal(url, 'https://api.github.com/graphql');
-    assert.deepEqual(JSON.parse(String(init.body)).variables, { owner: 'team', repo: 'repo', number: 7, cursor: pages ? 'after-first' : null });
+    const { query, variables } = JSON.parse(String(init.body));
+    assert.match(query, /originalCommit @include\(if: \$history\)/);
+    assert.deepEqual(variables, { owner: 'team', repo: 'repo', number: 7, cursor: pages ? 'after-first' : null, history });
+    if (history) assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer history-fixture');
     pages++;
     const nodes = pages === 1 ? [
-      { ...thread, isResolved: true }, { ...thread, isOutdated: true }, { ...thread, diffSide: 'LEFT' },
+      { ...thread, isResolved: true }, { ...thread, id: 'outdated', isOutdated: true, line: null, originalStartLine: 230, originalLine: 235 }, { ...thread, diffSide: 'LEFT' },
       ...[{ author: { __typename: 'Bot', login: 'other' } }, { author: { __typename: 'User', login: 'review-app' } },
         { replyTo: { id: 'reply' } }, { body: root.body.replace('workflow', 'different') }, { fullDatabaseId: '4500000002' }]
         .map(fields => ({ ...thread, comments: { nodes: [{ ...root, ...fields }] } })),
@@ -145,4 +158,88 @@ test('thread lookup selects the earliest open current-line finding by this app o
   });
   assert.deepEqual((await method.call(github, 'workflow')).map(t => t.id), [4500000001, 4500000002]);
   assert.equal(pages, 2);
+  pages = 0; history = true;
+  const all = await method.call(github, 'workflow', true);
+  assert.deepEqual(all.filter(t => t.outdated).map(t => [t.nodeId, t.line]), [['outdated', 230]]);
+  assert.equal(all.find(t => !t.outdated)?.line, 263);
+});
+
+test('summary links posted finding titles and retains unmatched findings and report notes', () => {
+  const findings = [{id:'a',title:'First [item]'}, {id:'b',title:'Second'}];
+  const inlineBodies = Object.fromEntries(findings.map(f => [f.id, `**P2 · ${f.title}**\n\nDetails`]));
+  const blocks = findings.map(f => `#### P2 · ${f.title}\n\nLocation: src/main.ts\n\n**Reason:** why ${f.id}\n\n**Suggested fix:** fix\n\n**Verification:** verify\n\n`);
+  const body = '### Findings\n\n' + blocks.join('') + '> Verification gap: test\n\nFooter';
+  const summary = linkedFindingSummary(body, findings, {a:{id:123}}, 'https://github.com/org/repo/pull/7', inlineBodies);
+  assert.ok(summary.includes('[First &#91;item&#93;](https://github.com/org/repo/pull/7#discussion_r123)'));
+  assert.ok(!summary.includes('why a')); assert.ok(summary.includes(blocks[1]));
+  assert.ok(summary.endsWith('> Verification gap: test\n\nFooter'));
+  const reordered = body.replace(blocks.join(''), [...blocks].reverse().join(''));
+  assert.ok(linkedFindingSummary(reordered, findings, {a:{id:123}}, 'unused', inlineBodies).startsWith(reordered));
+  const ambiguous = reordered.replace('#### P2 · Second', '#### P2 · First [item]');
+  assert.ok(linkedFindingSummary(ambiguous, findings, {a:{id:123}}, 'unused', {a:inlineBodies.a, b:inlineBodies.a}).startsWith(ambiguous));
+  const shortened = '### Findings\n\n' + blocks[0] + '> This comment omits findings';
+  assert.ok(linkedFindingSummary(shortened, findings, {a:{id:123}}, 'unused', inlineBodies).startsWith(shortened));
+  assert.equal(linkedFindingSummary(body, findings, {a:{}}, 'unused', inlineBodies), body);
+});
+
+test('a partially recognized summary cannot transfer an inline receipt to the next finding', () => {
+  const findings = [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }];
+  const inlineBodies = Object.fromEntries(findings.map(f => [f.id, `**P2 · ${f.title}**\n\nDetails`]));
+  const blocks = findings.map(f =>
+    `#### P2 · ${f.title}\n\nLocation: src/main.ts\n\n**Reason:** why ${f.id}\n\n**Suggested fix:** fix\n\n**Verification:** verify\n\n`);
+  const report = '### Findings\n\n' + blocks[0].replace('why first', 'why first\ncontinued') + blocks[1] + '---';
+  for (const receipt of [{ id: 123 }, { continued: 123 }]) {
+    const summary = linkedFindingSummary(report, findings, { first: receipt }, 'https://github.com/org/repo/pull/7', inlineBodies);
+    assert.ok(summary.startsWith(report));
+    assert.ok(summary.includes('[First](https://github.com/org/repo/pull/7#discussion_r123)'));
+  }
+});
+
+test('GitHub review anchors cover the entire engine range or leave it in the summary', () => {
+  const lines = patchRightLines('@@ -1 +263,7 @@\n-old\n' + '+new\n'.repeat(7) + '@@ -30 +290 @@\n added');
+  assert.deepEqual(findingAnchor(lines, { start_line: 263, end_line: 269 }), { start_line: 263, start_side: 'RIGHT', line: 269, side: 'RIGHT' });
+  assert.deepEqual(findingAnchor(lines, { start_line: 269 }), { line: 269, side: 'RIGHT' });
+  for (const end of [262, 270, 290, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(findingAnchor(lines, { start_line: 263, end_line: end }), undefined);
+  }
+});
+
+test('resolution retries across reviews reuse the original app reply without editing or posting again', async () => {
+  const requests: string[] = [];
+  const parent = 29;
+  const marker = (job: string) => `<!-- inkspect:resolution:${job}:${parent} -->`;
+  const original = { id: 90, in_reply_to_id: parent, user: { type: 'Bot' }, performed_via_github_app: { id: 1 },
+    body: marker('old') + '\nOriginal evidence' };
+  const rows = [
+    { ...original, id: 10, performed_via_github_app: { id: 9 } },
+    { ...original, id: 11, in_reply_to_id: 30 },
+    { ...original, id: 12, body: '<!-- inkspect:resolution:old:30 -->\nOther finding' },
+    { ...original, id: 13, body: 'Verified in a different commit' },
+  ];
+  const github: PullGitHub = Object.assign(Object.create(PullGitHub.prototype), {
+    worker: { full_name: 'team/repo', app_id: '1' }, number: 1,
+    list: async () => rows,
+    request: async (path: string, method: string, payload: { body: string }) => {
+      requests.push(method);
+      assert.equal(path, '/repos/team/repo/pulls/1/comments/29/replies');
+      assert.equal(method, 'POST');
+      rows.push({ ...original, body: payload.body });
+      throw Error('lost response');
+    },
+  });
+  const send = (state: Delivery, job: string) => github.deliver(state, marker(job), 'Evidence ' + job,
+    'inline', async () => {}, async () => {}, { reply_to: parent }, 'first-resolution');
+  const pending: Delivery = {};
+  await assert.rejects(send(pending, 'old'), /lost response/);
+  assert.equal(pending.sending, true);
+  const posted = rows.pop()!;
+  await assert.rejects(send(pending, 'next'), /comment_creation_uncertain/);
+  rows.push(posted);
+  const recovered: Delivery[] = [pending, {}, {}];
+  for (const [index, state] of recovered.entries()) {
+    await send(state, 'new-' + index);
+    assert.equal(state.id, original.id);
+    assert.equal(state.body, marker('old') + '\nEvidence old');
+  }
+  assert.deepEqual(requests, ['POST']);
 });

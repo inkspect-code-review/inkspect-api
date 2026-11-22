@@ -36,13 +36,13 @@ export async function installationMetadata(id: string, signal: AbortSignal) {
 export async function repositoryToken(worker: Worker, signal: AbortSignal, contents: boolean | "write" = false, publish = false) {
   return (await repositoryAccess(worker, signal, contents, publish)).token;
 }
-export async function repositoryAccess(worker: Worker, signal: AbortSignal, contents: boolean | "write", publish: boolean, reviewChecks = false) {
+export async function repositoryAccess(worker: Worker, signal: AbortSignal, contents: boolean | "write", publish: boolean | "read", reviewChecks = false) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(worker.full_name)) throw new MetadataFailure('invalid_metadata');
   const jwt = await appToken(String(worker.app_id), worker.private_key_file);
   const install = await github(`/repos/${worker.full_name}/installation`, jwt, signal);
   if (String(install.id) !== String(worker.installation_id) || String(install.app_id) !== String(worker.app_id) || install.suspended_at) throw new MetadataFailure('revoked');
   const checks = reviewChecks && install.permissions?.checks === 'write';
-  const token = await github(`/app/installations/${worker.installation_id}/access_tokens`, jwt, signal, { repository_ids: [Number(worker.repository_id)], permissions: { metadata: 'read', ...(contents ? { contents: contents === 'write' ? 'write' : 'read' } : {}), ...(publish ? { pull_requests: 'write' } : {}), ...(checks ? { checks: 'write' } : {}) } });
+  const token = await github(`/app/installations/${worker.installation_id}/access_tokens`, jwt, signal, { repository_ids: [Number(worker.repository_id)], permissions: { metadata: 'read', ...(contents ? { contents: contents === 'write' ? 'write' : 'read' } : {}), ...(publish ? { pull_requests: publish === 'read' ? 'read' : 'write' } : {}), ...(checks ? { checks: 'write' } : {}) } });
   if (typeof token.token !== 'string' || token.repositories?.length !== 1 || String(token.repositories[0].id) !== worker.repository_id) throw new MetadataFailure('invalid_metadata');
   return { token: token.token as string, checks, appSlug: typeof install.app_slug === 'string' ? install.app_slug.toLowerCase() : undefined };
 }

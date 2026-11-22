@@ -15,7 +15,7 @@ export function eligibility(worker: Worker | null, now = Date.now()) {
 export async function workerFor(organization: string, repository: number, connection: string, installation: string, pool = database()): Promise<Worker | null> {
   return (await pool.query<Worker>('SELECT * FROM api_repository_worker WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4', [organization, String(repository), connection, installation])).rows[0] ?? null;
 }
-function table(worker: Worker) {
+function table(worker: Pick<Worker, "queue_schema">) {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(worker.queue_schema)) throw new Error('Invalid queue registration');
   return `"${worker.queue_schema}".repository_indexes`;
 }
@@ -66,10 +66,45 @@ export async function lastIndexed(worker: Worker, pool = database(worker.queue_d
 }
 
 // A failed later reindex does not discard a previously published snapshot.
+type IndexScope = Pick<Worker, "organization_id" | "repository_id" | "connection_id" | "installation_id" | "queue_schema">;
+function savedIndexQuery(worker: IndexScope, fields: string, offset = 0) {
+  const values = [worker.organization_id, worker.repository_id, worker.connection_id, worker.installation_id];
+  const [tenant, repo, connection, installation] = values.map((_, i) => `$${offset + i + 1}`);
+  return {
+    text: `SELECT ${fields} FROM ${table(worker)}
+      WHERE tenant_id=${tenant} AND repository_id=${repo} AND connection_id=${connection} AND installation_id=${installation}
+        AND progress->>'indexed'='true' AND progress->>'revision' ~ '^[a-f0-9]{40}$'
+      ORDER BY created_at DESC LIMIT 1`,
+    values,
+  };
+}
 export async function storedIndex(worker: Worker, pool = database(worker.queue_database)): Promise<RepositoryIndex | null> {
-  return (await pool.query<RepositoryIndex>(`SELECT ${columns} FROM ${table(worker)}
-    WHERE tenant_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4
-      AND progress->>'indexed'='true' AND progress->>'revision' ~ '^[a-f0-9]{40}$'
-    ORDER BY created_at DESC LIMIT 1`,
-  [worker.organization_id, worker.repository_id, worker.connection_id, worker.installation_id])).rows[0] ?? null;
+  return (await pool.query<RepositoryIndex>(savedIndexQuery(worker, columns))).rows[0] ?? null;
+}
+
+type ConnectedIndexScope = Pick<IndexScope, "repository_id" | "connection_id" | "installation_id">;
+export async function repositoryIndexCoverage(organization: string, scopes: ConnectedIndexScope[], getPool = database) {
+  const coverage: Record<string, "indexed" | "partial"> = {};
+  if (!scopes.length) return coverage;
+  const workers = await getPool().query<IndexScope & { queue_database: string }>(`
+    SELECT w.organization_id, w.repository_id, w.connection_id, w.installation_id, w.queue_schema, w.queue_database
+    FROM api_repository_worker w
+    JOIN unnest($2::text[], $3::text[], $4::bigint[]) AS allowed(repository_id, connection_id, installation_id)
+      USING (repository_id, connection_id, installation_id)
+    WHERE w.organization_id=$1 AND (w.access_error IS NULL OR w.access_error NOT IN ('revoked', 'access_unavailable'))`,
+    [organization, scopes.map(s => s.repository_id), scopes.map(s => s.connection_id), scopes.map(s => s.installation_id)]);
+  // Each repository has its own queue schema. Read the visible page in one query per database.
+  for (const db of new Set(workers.rows.map(w => w.queue_database))) {
+    const queries: string[] = [];
+    const values: string[] = [];
+    for (const worker of workers.rows.filter(w => w.queue_database === db)) {
+      const fields = `repository_id, progress->'partial' AS partial, coalesce(progress->>'skipped', progress#>>'{scan,skipped}') AS skipped`;
+      const query = savedIndexQuery(worker, fields, values.length);
+      queries.push(`(${query.text})`);
+      values.push(...query.values);
+    }
+    const saved = await getPool(db).query<{ repository_id: string; partial: boolean | null; skipped: string | null }>(queries.join(" UNION ALL "), values);
+    for (const row of saved.rows) coverage[row.repository_id] = row.partial || Number(row.skipped) > 0 ? "partial" : "indexed";
+  }
+  return coverage;
 }

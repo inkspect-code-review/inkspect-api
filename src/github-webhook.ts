@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {database} from "./database";
 import {cancelIndex,type Worker} from "./repository-store";
 import { enqueuePullEvent, parsePullEvent } from "./pull-request-events";
+import { enqueueCheckRerequest } from './github-check-reconciliation';
 export async function githubWebhook(request:Request){
  if(request.method!=='POST')return Response.json({error:'Method not allowed.'},{status:405});
  const file=process.env.API_GITHUB_WEBHOOK_SECRET_FILE;
@@ -18,6 +19,10 @@ export async function githubWebhook(request:Request){
  let data;try{data=JSON.parse(body.toString('utf8'));}catch{return Response.json({error:'Invalid payload.'},{status:400});}
  const event=request.headers.get('x-github-event');
  if(!data || !Number.isSafeInteger(data.installation?.id))return Response.json({accepted:true}, {status:202});
+ if (event === 'check_run' && data.action === 'rerequested') {
+   await enqueueCheckRerequest(data, request.headers.get('x-github-delivery'));
+   return Response.json({accepted:true},{status:202});
+ }
  const pull = parsePullEvent(event || '', data);
  if(pull)await enqueuePullEvent(pull);
  const removed=event==='installation'&&['deleted','suspend'].includes(data.action);
