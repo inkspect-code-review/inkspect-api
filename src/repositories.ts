@@ -49,11 +49,11 @@ export async function repositories(request: Request, auth: Auth, store: typeof d
     if (request.method === 'GET' && action === 'detail') {
       const index = worker ? await store.latestIndex(worker) : null;
       let freshness = { up_to_date: false, check_failed: false };
-      if (worker && index && url.searchParams.get('checkFreshness') === '1' && !['queued', 'running'].includes(index.status)) {
+      if (worker && index && (worker.merge_refresh_due_at || url.searchParams.get('checkFreshness') === '1') && !['queued', 'running'].includes(index.status)) {
         try { freshness = { ...freshness, ...await store.indexFreshness(worker, request.signal) }; }
         catch { freshness.check_failed = true; }
       }
-      return reviewJSON({ index, eligibility: eligibility(worker), freshness, realtime_channel: channel });
+      return reviewJSON({ index, eligibility: eligibility(worker), freshness: { ...freshness, ...(worker?.merge_refresh_due_at && !freshness.up_to_date ? { scheduled_at: worker.merge_refresh_due_at } : {}) }, realtime_channel: channel });
     }
     if (request.method !== 'POST' || !['index','analyze','cancel'].includes(action)) throw new ReviewError(405, 'Method not allowed.');
     if (!worker) throw new ReviewError(503, preparingRepository);

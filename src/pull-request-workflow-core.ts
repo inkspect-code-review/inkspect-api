@@ -1,5 +1,7 @@
 import { matchingGithubReview } from './github-check-reconciliation';
 import { publishResolutions, type FollowupReport, type ResolutionDelivery } from './finding-followup';
+import { indexFreshness } from './index-freshness';
+import { storedIndex } from './repository-store';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { engineRequest } from "@inkspect/core/lib/engine-client";
@@ -395,7 +397,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   return 10_000;
 }
 
-async function bindingFor(tx: PoolClient, row: Workflow): Promise<Binding | undefined> {
+async function bindingFor(tx: PoolClient, row: Pick<Workflow, 'organization_id' | 'repository_id' | 'connection_id' | 'installation_id'>): Promise<Binding | undefined> {
   return (await tx.query<Binding>(`SELECT w.*,m."userId" AS subject,coalesce(s.automatic,true) AS automatic,coalesce(s.check_threshold,'P0') AS check_threshold,coalesce(s.ignored_authors,'{}'::text[]) AS ignored_authors
     FROM api_repository_worker w JOIN "githubConnection" c ON c.id=w.connection_id AND c."organizationId"=w.organization_id AND c."installationId"=w.installation_id::text
     JOIN "githubRepositoryClaim" claim ON claim."organizationId"=w.organization_id AND claim."repositoryId"=w.repository_id
@@ -405,6 +407,41 @@ async function bindingFor(tx: PoolClient, row: Workflow): Promise<Binding | unde
       AND coalesce(w.access_error,'') NOT IN ('revoked','access_unavailable')
       AND EXISTS(SELECT 1 FROM jsonb_array_elements(c.repositories::jsonb) r WHERE r->>'id'=w.repository_id AND lower(r->>'fullName')=lower(w.full_name))`,
   [row.organization_id, row.repository_id, row.connection_id, row.installation_id])).rows[0];
+}
+
+// Hold the schedule row while admitting to the separate index queue. A merge
+// arriving during admission creates a new deadline after this transaction.
+export async function processMergeRefresh(signal: AbortSignal, services: WorkflowServices, pool = database(), checks = { storedIndex, indexFreshness }) {
+  const tx = await pool.connect();
+  try {
+    await tx.query('BEGIN');
+    const row = (await tx.query(`SELECT * FROM api_merge_index_refresh WHERE due_at<=now()
+      ORDER BY due_at LIMIT 1 FOR UPDATE SKIP LOCKED`)).rows[0];
+    if (row) {
+      let delay: number | null = null;
+      try {
+        const worker = await bindingFor(tx, row as Workflow);
+        if (worker && await checks.storedIndex(worker)) {
+          const check = services.eligibility(worker);
+          const latest = await services.latestIndex(worker);
+          if (latest && ['running','queued'].includes(latest.status)) delay = 60;
+          else if (!check.allowed) delay = check.support_required ? null : 300;
+          else if (!(await checks.indexFreshness(worker, signal, true)).up_to_date) {
+            await services.admitIndex(worker.organization_id, worker.subject, worker.repository_id, row.request_id);
+            const job = await services.enqueueIndex(worker, row.request_id, worker.subject, false);
+            // A manually started run may have won admission after our check.
+            if (job.id !== row.request_id) delay = 60;
+          }
+        }
+      } catch {
+        delay = 300;
+        console.error(JSON.stringify({event:'repository.merge_refresh_retry'}));
+      }
+      await tx.query(`UPDATE api_merge_index_refresh SET due_at=now()+$2::integer*interval '1 second' WHERE request_id=$1`, [row.request_id,delay]);
+    }
+    await tx.query('COMMIT');
+    return !!row;
+  } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
 }
 
 export async function processPullRequest(signal: AbortSignal, services: WorkflowServices, pool = database()) {

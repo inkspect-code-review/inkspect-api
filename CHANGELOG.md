@@ -6,6 +6,16 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-23
+
+#### Changed
+
+- Share the engine document embedding rate directory across concurrent worker jobs.
+
+- Coalesce default-branch PR merges into one index refresh an hour after the latest merge, skipping repositories already refreshed manually.
+
+- Honor an optional indexing size limit on each registered repository.
+
 ### 2026-11-22
 
 #### Added

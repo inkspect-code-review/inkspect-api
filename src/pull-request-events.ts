@@ -4,7 +4,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 
 const positive = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) > 0;
-export type PullEvent = { installation: number; repository: number; fullName: string; number: number;
+export type PullEvent = { installation: number; repository: number; fullName: string; number: number; mergedAt?: string;
   message?: { id: number; kind: 'issue' | 'inline'; sender: string; intent: 'review' | 'explain'; replyTo?: number; note?: string } };
 
 // Notes stay well inside the engine's 2000-byte review-note bound.
@@ -97,20 +97,34 @@ export function parsePullEvent(event: string, data: any): PullEvent | null {
       ...(note ? { note } : {}) };
   } else return null;
   if (!positive(number) || number > 2147483647) return null;
-  return { installation: data.installation.id, repository: data.repository.id, fullName: data.repository.full_name, number, message };
+  const pull = data.pull_request;
+  const mergedAt = event === 'pull_request' && data.action === 'closed' && pull.merged === true &&
+    typeof data.repository.default_branch === 'string' && pull.base.ref === data.repository.default_branch &&
+    typeof pull.merged_at === 'string' && Number.isFinite(Date.parse(pull.merged_at))
+    ? new Date(pull.merged_at).toISOString() : undefined;
+  return { ...(mergedAt ? { mergedAt } : {}), installation: data.installation.id, repository: data.repository.id, fullName: data.repository.full_name, number, message };
 }
 
 export async function enqueuePullEvent(event: PullEvent, pool = database()) {
   const tx = await pool.connect();
   try {
     await tx.query('BEGIN');
-    const binding = (await tx.query(`SELECT c.id,c."organizationId" FROM "githubConnection" c
+    const binding = (await tx.query(`SELECT c.id,c."organizationId",coalesce(s.automatic,true) AS automatic FROM "githubConnection" c
       JOIN "githubRepositoryClaim" claim ON claim."organizationId"=c."organizationId" AND claim."repositoryId"=$2
       LEFT JOIN api_review_settings s ON s.organization_id=c."organizationId"
-      WHERE c."installationId"=$1 AND coalesce(s.automatic,true)
+      WHERE c."installationId"=$1
         AND EXISTS(SELECT 1 FROM jsonb_array_elements(c.repositories::jsonb) r WHERE r->>'id'=$2 AND lower(r->>'fullName')=lower($3))`,
     [String(event.installation), String(event.repository), event.fullName])).rows[0];
     if (!binding) { await tx.query('COMMIT'); return; }
+    if (event.mergedAt) {
+      await tx.query(`INSERT INTO api_merge_index_refresh(organization_id,repository_id,connection_id,installation_id,merged_at,due_at,request_id)
+        VALUES($1,$2,$3,$4,$5::timestamptz,$5::timestamptz + interval '1 hour',$6)
+        ON CONFLICT(organization_id,repository_id,connection_id,installation_id) DO UPDATE
+        SET merged_at=excluded.merged_at,due_at=excluded.due_at,request_id=excluded.request_id
+        WHERE excluded.merged_at > api_merge_index_refresh.merged_at`,
+        [binding.organizationId,String(event.repository),binding.id,event.installation,event.mergedAt,randomUUID()]);
+    }
+    if (binding.automatic === false) { await tx.query('COMMIT'); return; }
     const row = (await tx.query(`INSERT INTO api_pull_request_workflow(id,organization_id,repository_id,connection_id,installation_id,number)
       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(organization_id,repository_id,connection_id,installation_id,number)
       DO UPDATE SET wake_at=clock_timestamp(),next_run_at=clock_timestamp() RETURNING id`,

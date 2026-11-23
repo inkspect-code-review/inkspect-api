@@ -2,18 +2,26 @@ import type { Pool } from 'pg';
 import { database } from "./database";
 import { ReviewError } from "@inkspect/core/lib/review-access";
 import type { RepositoryIndex } from "@inkspect/core/lib/repository-types";
-import type { Worker } from "@inkspect/core/lib/worker-type";
-export type { Worker } from "@inkspect/core/lib/worker-type";
+import type { Worker as RegisteredWorker } from "@inkspect/core/lib/worker-type";
+export type Worker = RegisteredWorker & { index_limit_bytes?: string | null; merge_refresh_due_at?: Date | null };
 export const indexLimit = 500 * 1024 * 1024;
 export const preparingRepository = 'Preparing repository for indexing…';
 export function eligibility(worker: Worker | null, now = Date.now()) {
   const size = worker?.size_bytes != null ? Number(worker.size_bytes) : null;
   const verified = !!worker?.access_verified_at && now - new Date(worker.access_verified_at).getTime() < 15 * 60_000 && !worker.access_error;
-  const support = size !== null && size > indexLimit;
-  return { size_bytes: size, limit_bytes: indexLimit, allowed: verified && size !== null && size >= 0 && !support, support_required: support, reason: support ? 'Repositories over 500 MB require support assistance.' : !worker ? preparingRepository : !verified || size === null ? 'Checking repository access and size…' : undefined };
+  const limit = Number(worker?.index_limit_bytes ?? indexLimit);
+  const support = size !== null && size > limit;
+  return {
+    size_bytes: size,
+    limit_bytes: limit,
+    allowed: verified && size !== null && size >= 0 && !support,
+    support_required: support,
+    reason: support ? `Repositories over ${limit / (1024 * 1024)} MB require support assistance.`
+      : !worker ? preparingRepository : !verified || size === null ? 'Checking repository access and size…' : undefined,
+  };
 }
 export async function workerFor(organization: string, repository: number, connection: string, installation: string, pool = database()): Promise<Worker | null> {
-  return (await pool.query<Worker>('SELECT * FROM api_repository_worker WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4', [organization, String(repository), connection, installation])).rows[0] ?? null;
+  return (await pool.query<Worker>(`SELECT w.*, r.due_at AS merge_refresh_due_at FROM api_repository_worker w LEFT JOIN api_merge_index_refresh r USING(organization_id,repository_id,connection_id,installation_id) WHERE w.organization_id=$1 AND w.repository_id=$2 AND w.connection_id=$3 AND w.installation_id=$4`, [organization, String(repository), connection, installation])).rows[0] ?? null;
 }
 function table(worker: Pick<Worker, "queue_schema">) {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(worker.queue_schema)) throw new Error('Invalid queue registration');
