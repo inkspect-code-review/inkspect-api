@@ -22,6 +22,7 @@ export async function runRust(mode: 'review' | 'index' | 'index-stats' | 'contex
   const args = mode === 'review' ? ['review'] : ['service', '--mode', mode, '--request', join(directory, 'request.json')];
   args.push('--config', join(directory, 'host.json'), '--job', join(directory, 'job.json'), '--out', join(directory, 'report.json'));
   const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV ?? 'production', PATH: '/usr/local/bin:/usr/bin:/bin', INKSPECT_GITHUB_READ_TOKEN: token,
+    INKSPECT_EMBEDDING_RATE_DIR: resolve(directory, '..', '.embedding-rate'),
     INKSPECT_USAGE_FILE: join(directory, 'usage.jsonl'), INKSPECT_GITHUB_APP_SLUG: appLogin() };
   if (mode === 'review' || mode === 'fix' || mode === 'verify-fix') env.INKSPECT_REVIEW_CONTEXT_FILE = join(directory, 'model-context.json');
   if (onIndexProgress) env.INKSPECT_INDEX_PROGRESS_FILE = join(directory, 'index-progress.json');

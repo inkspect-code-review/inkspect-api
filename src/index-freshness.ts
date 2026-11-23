@@ -8,7 +8,7 @@ const heads = new Map<string, { revision: string; expires: number }>();
 export async function indexFreshness(worker: Worker, signal: AbortSignal, force = false, dependencies = { fetchRepositoryRevision, lastIndexed }): Promise<RepositoryIndexFreshness> {
   const saved = await dependencies.lastIndexed(worker);
   if (!saved?.progress.revision) return { up_to_date: false };
-  const key = JSON.stringify([worker.organization_id, worker.repository_id, worker.connection_id, worker.installation_id, worker.full_name, worker.app_id]);
+  const key = JSON.stringify([worker.organization_id, worker.repository_id, worker.connection_id, worker.installation_id, worker.full_name, worker.app_id, worker.merge_refresh_due_at ?? null]);
   const cached = heads.get(key);
   let revision = !force && cached && cached.expires > Date.now() ? cached.revision : undefined;
   if (!revision) {

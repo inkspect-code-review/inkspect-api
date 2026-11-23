@@ -50,3 +50,12 @@ test('pull request lifecycle events remain independent of comment mentions', () 
     assert.equal(parsePullEvent('pull_request', data)?.number, 3);
   }
 });
+
+test('only closing a merged PR into the default branch schedules indexing', () => {
+  const data = { ...event(''), number:3, action:'closed', repository:{id:17,full_name:'team/repo',default_branch:'main'},
+    pull_request:{number:3,base:{ref:'main',repo:{id:17}},merged:true,merged_at:'2026-11-23T14:00:00Z'} };
+  assert.equal(parsePullEvent('pull_request',data)?.mergedAt,'2026-11-23T14:00:00.000Z');
+  for (const pull of [{...data.pull_request,merged:false},{...data.pull_request,base:{ref:'other',repo:{id:17}}}]) {
+    assert.equal(parsePullEvent('pull_request',{...data,pull_request:pull})?.mergedAt,undefined);
+  }
+});
