@@ -181,7 +181,18 @@ export class PullGitHub {
       throw error;
     }
   }
-  async resolveFindingThread(nodeId: string) {
+  async resolveFindingThread(nodeId: string): Promise<void | false> {
+    // GitHub can let the installation reply to a thread while reserving
+    // resolution for the author or a collaborator. Check with the same token
+    // that will perform the mutation, not the read-only history client.
+    const access = await this.githubRequest('/graphql', 'POST', {
+      query: 'query ThreadAccess($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { id isResolved viewerCanResolve } } }',
+      variables: { id: nodeId },
+    });
+    const current = access.data?.node;
+    if (access.errors?.length || current?.id !== nodeId) throw new Error('Cannot read finding resolution access');
+    if (current.isResolved === true) return;
+    if (current.viewerCanResolve === false) return false;
     const result = await this.githubRequest('/graphql', 'POST', {
       query: 'mutation ResolveFinding($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { id isResolved } } }',
       variables: { thread: nodeId },

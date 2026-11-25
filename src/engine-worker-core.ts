@@ -157,14 +157,17 @@ async function runIndex(worker: Worker) {
     if (!(await lock.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS ok', [key])).rows[0].ok) return;
     row = (await lock.query(`SELECT * FROM ${table} WHERE tenant_id=$1 AND repository_id=$2 AND status IN ('queued','running') ORDER BY created_at LIMIT 1`, [worker.organization_id, worker.repository_id])).rows[0];
     if (!row || draining) return;
-    // Same session lock as the old Go indexer. An orphan is not replayed.
-    if (row.status === 'running') throw new Error('Interrupted index');
+    // Owning the advisory lock means an earlier worker can no longer own this job.
+    // Only the deterministic vector write phase can resume after a crash.
+    if (row.status === 'running' && (row.progress.analyze_only || row.progress.indexed))
+      throw new Error('Interrupted index description');
     const claims = { tenant: worker.organization_id, repository: Number(worker.repository_id), connection: row.connection_id, installation: Number(row.installation_id), subject: row.subject };
     await authorizedWorker(claims);
     await indexOperation(worker.organization_id, row.subject, row.id, worker.repository_id);
     await verifyIndexAccess(worker.organization_id, row.subject, worker.repository_id);
     row.progress = indexStage(row.progress, 'resolving', 'Resolving repository access and the selected revision.');
-    await lock.query(`UPDATE ${table} SET status='running',progress=$4,updated_at=now() WHERE tenant_id=$1 AND repository_id=$2 AND id=$3 AND status='queued'`, [worker.organization_id, worker.repository_id, row.id, row.progress]);
+    const claimed = await lock.query(`UPDATE ${table} SET status='running',progress=$4,updated_at=now() WHERE tenant_id=$1 AND repository_id=$2 AND id=$3 AND status=$5`, [worker.organization_id, worker.repository_id, row.id, row.progress, row.status]);
+    if (!claimed.rowCount) return;
     let watching = false;
     watch = setInterval(async () => {
       if (watching) return; watching = true;
@@ -174,7 +177,7 @@ async function runIndex(worker: Worker) {
       } catch { abort.abort(); } finally { watching = false; }
     }, 3000);
     let revision: string;
-    try { revision = row.progress.analyze_only ? row.progress.revision : await fetchRepositoryRevision(worker, abort.signal); }
+    try { revision = row.progress.revision ?? await fetchRepositoryRevision(worker, abort.signal); }
     catch (error) {
       if (!(error instanceof EmptyRepository) || abort.signal.aborted) throw error;
       await authorizedWorker(claims);
@@ -201,6 +204,15 @@ async function runIndex(worker: Worker) {
         if (!saved.rowCount) abort.abort();
       });
     if (!result.report || (!row.progress.analyze_only && !result.report.indexed) || abort.signal.aborted) {
+      const saved = row.progress.embedded + (row.progress.reused ?? 0);
+      if (!abort.signal.aborted && !row.progress.analyze_only && saved > (row.progress.resume_checkpoint ?? 0)
+        && result.events.some(e => e.kind === 'engine.failed' && (e.diagnostic_code === 'index.slice_expired' || e.code === 'retrieval.invalid'))) {
+        const progress = indexStage(row.progress, 'queued', `Resuming from ${saved} saved chunks.`);
+        await lock.query(`UPDATE ${table} SET status='queued',progress=$4,updated_at=now()
+          WHERE tenant_id=$1 AND repository_id=$2 AND id=$3 AND status='running'`,
+          [worker.organization_id, worker.repository_id, row.id, { ...progress, resume_checkpoint: saved }]);
+        return;
+      }
       if (engineFailure(result.events) === INVALID_IGNORE) failure = { code: INVALID_IGNORE, message: 'The .inkspectignore file on the default branch is invalid, so the repository was not indexed. Fix it, then start a new index.' };
       throw new Error('Index failed');
     }

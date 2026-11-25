@@ -10,6 +10,8 @@ import type { ProviderCredential } from "./engine-credentials";
 export interface FixPolicy {
   runRust?: typeof import('./engine-process').runRust;
   managedMode: string;
+  /** Permit the member role to request a fix on a connected workspace repository. */
+  allowMemberFixes?: boolean;
   /** Optional presentation of an edition-owned execution diagnostic. */
   status?: (job?: EngineJob) => ReturnType<typeof import('./engine-fix-core').fixStatus>;
   commitCoAuthor?: string;

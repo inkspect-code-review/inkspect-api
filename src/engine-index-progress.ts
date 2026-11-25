@@ -3,7 +3,7 @@ import type { RepositoryIndex } from "@inkspect/core/lib/repository-types";
 import { indexLogKey } from "@inkspect/core/lib/repository-activity";
 
 type Progress = RepositoryIndex['progress'];
-export type IndexProgress = Pick<Progress, 'stage' | 'scan' | 'chunks' | 'embedded' | 'indexed' | 'logs'>;
+export type IndexProgress = Pick<Progress, 'stage' | 'scan' | 'chunks' | 'embedded' | 'indexed' | 'logs'> & { reused?: number };
 
 export function mergeIndexProgress(previous: Progress, next: Partial<Progress>): Progress {
   const logs = new Map(previous.logs.map(log => [indexLogKey(log), log]));
@@ -34,13 +34,14 @@ export function watchIndexProgress(file: string, receive: (progress: IndexProgre
     if (!['cloning', 'discovering', 'reading', 'embedding', 'publishing', 'summarizing'].includes(value.stage)
       || !value.scan || !['total', 'processed', 'read', 'skipped', 'chunks'].every(k => Number.isSafeInteger(value.scan[k]) && value.scan[k] >= 0)
       || !['chunks', 'embedded'].every(k => Number.isSafeInteger(value[k]) && value[k] >= 0)
+      || (value.reused !== undefined && (!Number.isSafeInteger(value.reused) || value.reused < 0 || value.reused + value.embedded > value.chunks))
       || typeof value.scan.measured !== 'boolean' || typeof value.scan.stage !== 'string'
       || typeof value.indexed !== 'boolean' || !Array.isArray(value.logs) || value.logs.length > 12
       || value.logs.some((log: any) => typeof log.key !== 'string' || !log.key.startsWith('progress:')
         || typeof log.message !== 'string' || log.message.length > 500 || !Number.isSafeInteger(log.at) || log.at < 0 || log.at > 8.64e15)) {
       throw new Error('Invalid index progress');
     }
-    await receive({ stage: value.stage, scan: value.scan, chunks: value.chunks, embedded: value.embedded, indexed: value.indexed,
+    await receive({ stage: value.stage, scan: value.scan, chunks: value.chunks, embedded: value.embedded, reused: value.reused ?? 0, indexed: value.indexed,
       logs: value.logs.map((log: any) => ({ ...log, at: new Date(log.at).toISOString() })) });
     last = raw;
   }

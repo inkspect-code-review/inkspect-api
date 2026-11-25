@@ -6,6 +6,17 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+### 2026-11-25
+
+#### Fixed
+
+- Continue interrupted vector indexing on the pinned revision and allow review workflows to prepare optional index context in the background.
+- Finish publishing a review when GitHub lets the installation reply to an earlier finding but reserves thread resolution for a collaborator.
+
+#### Added
+
+- Allow fix policies to grant repository members access to manual fixes during admission, execution and publication.
+
 ### 2026-11-23
 
 #### Changed

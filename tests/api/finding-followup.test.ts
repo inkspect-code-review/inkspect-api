@@ -29,12 +29,23 @@ function fixture() {
       assert.ok(body.includes('/blob/' + head + '/file.ts#L5'));
       if (!d.id) { d.id = 13; events.push('reply'); }
     },
-    async resolveFindingThread(id: string) { assert.equal(id, old.nodeId); events.push('resolve'); },
+    async resolveFindingThread(id: string): Promise<false | void> { assert.equal(id, old.nodeId); events.push('resolve'); },
   };
   const run = (r = report, threads = [old], guard = async () => {}) =>
     publishResolutions(github as unknown as PullGitHub, r, threads, deliveries, async () => {}, guard);
-  return { github, events, run };
+  return { github, events, run, deliveries };
 }
+
+test('a restricted thread keeps the reply and does not block publication', async () => {
+  const f = fixture();
+  const resolve = f.github.resolveFindingThread;
+  f.github.resolveFindingThread = async () => false;
+  await f.run();
+  assert.equal(f.deliveries['12'].resolved, undefined);
+  f.github.resolveFindingThread = resolve;
+  await f.run();
+  assert.deepEqual(f.events, ['reply', 'resolve']);
+});
 
 test('explains an outdated finding before resolving and recovers between writes', async () => {
   const f = fixture();

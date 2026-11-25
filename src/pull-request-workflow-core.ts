@@ -24,7 +24,7 @@ const ignoreDocs = '[how `.inkspectignore` works](https://inkspect.si/inkspectig
 export type ReviewNote = { author: string; body: string };
 // notes: participant requests for the next admission, frozen while admitting.
 // published: the completed job whose report is already on the pull request.
-export type WorkflowState = { head?: string; base?: string; index?: string; job?: string; rerun?: string; stopped?: boolean;
+export type WorkflowState = { head?: string; base?: string; index?: string; indexHead?: string; job?: string; rerun?: string; stopped?: boolean;
   check?: ReviewCheck; eyes?: boolean; summary?: Delivery; findings?: Record<string, Delivery & { continued?: number }>; error?: string;
   resolutions?: Record<string, ResolutionDelivery>; resolutionJob?: string;
   lastCheckDelivery?: string; reuseCheck?: boolean; notes?: ReviewNote[]; admitting?: boolean; published?: string };
@@ -40,6 +40,7 @@ const fitsNotes = (notes: ReviewNote[], note: ReviewNote) =>
 
 const commonServices = { engineRequest, admitIndex, eligibility, enqueueIndex, lastIndexed, latestIndex };
 export type WorkflowServices = typeof commonServices & { reviewLifecycle: ReviewLifecycle; pausedLabel: string; admissionHelp: string;
+  prepareReviewIndex?: (row: Workflow, worker: Binding, save: () => Promise<void>) => Promise<string>;
   matchingReview?: (row: Workflow, head: string, base: string, baseRef: string, rerequest: boolean) => Promise<string | undefined>;
   admissionBlock?: (error: unknown) => CheckNotice | undefined;
   waitingBlock?: (row: Workflow, job: ReviewJob) => Promise<CheckNotice | undefined>;
@@ -238,8 +239,10 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     await guardBinding();
     if (!worker.automatic) return null;
     if (isIgnoredAuthor(current.author, worker.ignored_authors)) return 1000;
-    const indexed = await services.lastIndexed(worker);
-    if (!indexed?.progress.indexed) {
+    let indexNote = 'Repository index ready.';
+    if (services.prepareReviewIndex) {
+      indexNote = await services.prepareReviewIndex(row, worker, save);
+    } else if (!(await services.lastIndexed(worker))?.progress.indexed) {
       let index = await services.latestIndex(worker);
       if (s.index && index?.id === s.index && index.status === 'failed') {
         await publish(index.progress.error_code === INVALID_IGNORE
@@ -263,7 +266,7 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
       return 10_000;
     }
     const admissionCheck = `admission/${row.id}/${current.head}/${current.base}/${s.rerun ?? 'first'}`;
-    if (s.check?.job !== admissionCheck) await publish(`## Inkspect · Review queued\n\nRepository index ready. Reviewing commit \`${s.head}\`.`);
+    if (s.check?.job !== admissionCheck) await publish(`## Inkspect · Review queued\n\n${indexNote} Reviewing commit \`${s.head}\`.`);
     await guard();
     if (!worker.automatic) return null;
     // Freeze the notes before the first attempt: an uncertain admission retries

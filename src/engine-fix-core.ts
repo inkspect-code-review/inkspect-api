@@ -67,15 +67,13 @@ export async function fixPullOpen(worker: Worker, sourceId: string, signal: Abor
   return (await fixPullState(worker, sourceId, signal)).pr_open;
 }
 
-// The connection owner or a workspace administrator may authorize code writes.
-// Ordinary membership is enough to view progress, but never to use app write credentials.
-export async function authorizeFix(claims: Claims) {
+export async function authorizeFix(claims: Claims, allowMemberFixes = false) {
   await authorizedWorker(claims);
   const allowed = await database().query(`SELECT 1 FROM member m JOIN "githubRepositoryClaim" c
     ON c."organizationId"=m."organizationId" AND c."repositoryId"=$3
-    WHERE m."organizationId"=$1 AND m."userId"=$2 AND (regexp_split_to_array(trim(m.role),'\\s*,\\s*') && ARRAY['owner','admin'] OR c."accountId"=m."userId")`,
-  [claims.tenant, claims.subject, String(claims.repository)]);
-  if (!allowed.rowCount) throw new ReviewError(403, 'A workspace admin or the repository connection owner must start AI fixes.');
+    WHERE m."organizationId"=$1 AND m."userId"=$2 AND (regexp_split_to_array(trim(m.role),'\\s*,\\s*') && $4::text[] OR c."accountId"=m."userId")`,
+  [claims.tenant, claims.subject, String(claims.repository), allowMemberFixes ? ['owner', 'admin', 'member'] : ['owner', 'admin']]);
+  if (!allowed.rowCount) throw new ReviewError(403, allowMemberFixes ? 'Your workspace role cannot start AI fixes.' : 'A workspace admin or the repository connection owner must start AI fixes.');
 }
 
 export async function autoFixGuard(job: EngineJob) {
@@ -171,11 +169,11 @@ async function admitFix(policy: FixPolicy, worker:Worker, claims:Claims, sourceI
   const existing = (await database().query<EngineJob>(`SELECT * FROM api_engine_job WHERE organization_id=$1 AND repository_id=$2 AND connection_id=$3 AND installation_id=$4 AND request->>'fix_of'=$5 ORDER BY created_at DESC,id DESC LIMIT 1`,
     [claims.tenant,worker.repository_id,claims.connection,claims.installation,sourceId])).rows[0];
   if (read) {
-    try { await authorizeFix(claims); await policy.provider(claims); }
+    try { await authorizeFix(claims, policy.allowMemberFixes); await policy.provider(claims); }
     catch (error) { if (!(error instanceof ReviewError)) throw error; return { available: false, reason: error.message, fix: (policy.status ?? fixStatus)(existing) }; }
     return { available: true, reason: !existing ? source.snapshot.auto_fix_outcome?.reason : undefined, billing_mode: (await policy.provider(claims)) ? "byok" : policy.managedMode, fix: (policy.status ?? fixStatus)(existing) };
   }
-  await authorizeFix(claims);
+  await authorizeFix(claims, policy.allowMemberFixes);
   if (retryOf) {
     // Explicit retry of a definite pre-publication failure, on the same saved
     // review. Duplicate/replayed requests return the same paid operation.
@@ -256,7 +254,7 @@ export async function commitRepair(worker: Worker, job: EngineJob, files: {path:
 }
 
 export async function runFix(policy: FixPolicy, job: EngineJob, worker: Worker, signal: AbortSignal) {
-  await authorizeFix(jobClaims(job));
+  await authorizeFix(jobClaims(job), policy.allowMemberFixes);
   await autoFixGuard(job);
   const source = await loadJob(worker, job.request.fix_of);
   if (!source || source.status !== 'completed' || source.snapshot.head !== job.snapshot.head) throw new Error('Source review unavailable');
@@ -270,7 +268,7 @@ export async function runFix(policy: FixPolicy, job: EngineJob, worker: Worker, 
   const token = await repositoryToken(worker, signal, true);
   if(!job.request.byok && policy.managedFix) {
     try { return await policy.managedFix(job,worker,source,token,signal,async verification=>{
-      await authorizeFix(jobClaims(job));await autoFixGuard(job);
+      await authorizeFix(jobClaims(job), policy.allowMemberFixes);await autoFixGuard(job);
       await guardPull();
       signal.throwIfAborted();const writeToken=await repositoryToken(worker,signal,'write');
       const intent=await database().query(`UPDATE api_engine_job SET snapshot=snapshot || $2::jsonb WHERE id=$1 AND NOT cancel_requested AND status='running' RETURNING id`,[job.id,{fix_publishing:true,fix_verification:verification,fix_engine:'claude_code'}]);
@@ -291,7 +289,7 @@ export async function runFix(policy: FixPolicy, job: EngineJob, worker: Worker, 
     throw error;
   }
   await database().query('UPDATE api_engine_job SET snapshot=snapshot || $2::jsonb WHERE id=$1', [job.id,{fix_verification:verification}]);
-  await authorizeFix(jobClaims(job));
+  await authorizeFix(jobClaims(job), policy.allowMemberFixes);
   await autoFixGuard(job);
   await policy.revalidate(job);
   await guardPull();

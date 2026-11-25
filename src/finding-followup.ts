@@ -87,7 +87,7 @@ export async function publishResolutions(github: PullGitHub, report: FollowupRep
     await guard();
     await github.deliver(delivery, `<!-- inkspect:resolution:${report.run.id}:${thread.id} -->`, body, 'inline', save, guard, { reply_to: thread.id }, 'first-resolution');
     await guard();
-    await github.resolveFindingThread(thread.nodeId);
+    if (await github.resolveFindingThread(thread.nodeId) === false) continue;
     delivery.resolved = true;
     await save();
   }
