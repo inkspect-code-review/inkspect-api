@@ -1,40 +1,30 @@
-# inkspect-api
+# Inkspect API
 
-Self-hosted API and shared worker implementation. No payment or Cloud policy code.
+The self-hosted API runs database migrations and the metadata, pull request and review workers.
 
 ## Local development
 
-Requires Node >=22.13. Run `npm ci`, `npm run audit`, `npm test`, and `npm run build`.
+1. Use Node.js 22.13 or newer. Run `npm ci` and copy `.env.example` to `.env.local`.
+2. Configure a dedicated database and auth origin, then run `npm run migrate`.
+3. Run `npm run build` and `npm start`. The API listens on loopback by default.
 
-This checkout installs independently: internal dependencies are versioned source packages in `vendor/`, with integrity recorded in `package-lock.json`. No sibling checkout, symlink, private registry login or original monorepo is needed. They are generated dependency artifacts; edit each dependency in its own repository and rebuild it with `npm run pack`. Never edit installed package copies.
+Run `npm run audit` and `npm test` to check the source. To start a worker, use
+`npm run metadata`, `npm run pulls` or `npm run engine`. The engine needs a Rust
+binary, GitHub App and model/retrieval configuration. Activate the configured
+generation with `node dist/engine-admin.mjs activate GENERATION http://127.0.0.1:8091`.
 
-Internal dependencies: `@inkspect/core`.
+## Automatic reviews
 
-Copy `.env.example` to `.env.local`, configure a dedicated database and auth origin, then run `npm run migrate`. Build first, then `npm start`. Workers: `npm run metadata`, `npm run pulls`, `npm run engine`. Engine requires a Rust binary, GitHub App, model/retrieval configuration and activation via `node dist/engine-admin.mjs activate GENERATION http://127.0.0.1:8091`. All listeners default to loopback.
+Workspace owners and admins configure `/api/review-settings`:
 
-Use the main `inkspect` repository to assemble compatible self-hosted releases. Repository privacy and package publication are controlled separately; all new repositories currently remain private. No production deployment is performed by local build/test commands.
+- `check_threshold` sets the lowest severity that fails a new check (P0–P3, default P0).
+- `ignored_authors` skips automatic reviews, replies and fixes for exact GitHub logins.
+  Matching is case-insensitive and includes the `[bot]` suffix. Workers cancel pending
+  automatic reviews on recheck and revisit known PRs when an author is removed.
+  Completed reports and manually requested reviews remain available.
 
-Source code is licensed under [MIT](LICENSE). Third-party dependencies retain their own licenses.
+For check re-runs, subscribe the GitHub App to **Check run** events and grant
+**Checks: write**. Each re-run creates a separate check and reuses a matching review
+or schedules an eligible attempt within the review budget.
 
-## Ignored pull request authors
-
-Workspace owners and admins can set `check_threshold` to P0 (default), P1, P2 or P3 through `/api/review-settings`. New GitHub checks fail on findings at or above the selected severity.
-
-Workspace owners and admins can manage `ignored_authors` through `/api/review-settings`.
-The list defaults to empty and uses exact, case-insensitive GitHub logins, including
-the `[bot]` suffix for app accounts. Ignored PRs skip automatic reviews, GitHub
-replies and automatic fixes. Existing automatic reviews are cancelled when the
-worker rechecks them; completed reports are retained. Removing an author wakes
-known PRs again. Reviews and fixes explicitly started in the dashboard remain available.
-Apply the API migrations before starting an updated service.
-
-## Contributing and community
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, commit notation and
-opening a pull request. All changes need an entry in [CHANGELOG.md](CHANGELOG.md).
-Follow our [Code of Conduct](CODE_OF_CONDUCT.md), use [SUPPORT.md](SUPPORT.md)
-for help, and report vulnerabilities privately using [SECURITY.md](SECURITY.md).
-
-### GitHub check re-runs
-
-Subscribe the GitHub App to **Check run** events and grant **Checks: write**. Re-run reuses a matching review or schedules another attempt for an eligible pull request. Each re-run creates a separate check. If the next model call would exceed the review budget, the check explains why the review stopped. The check conclusion follows the configured severity threshold and report coverage.
+[MIT license](LICENSE) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Support](SUPPORT.md) · [Security](SECURITY.md)
