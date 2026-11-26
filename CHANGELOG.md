@@ -10,6 +10,8 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 #### Changed
 
+- Trace a GitHub webhook through the pull request and engine workers and document how to run the HTTP service locally.
+
 - Condense API startup, worker activation and automatic review settings in the README.
 
 - Refresh the shared authentication library with support for additional OAuth providers.
