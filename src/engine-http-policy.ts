@@ -11,6 +11,10 @@ export interface EngineHttpPolicy {
   configuration(host: HostConfig): Record<string, unknown>;
   admission(input: ReviewIdentityInput): Promise<{ job_id: string | null }>;
   attach(input: ReviewIdentityInput, jobId: string, tx: PoolClient): Promise<void>;
+  additionalChat?: {
+    accepts(claims: EngineScope): boolean;
+    read(claims: EngineScope, mode: 'context' | 'source', body: Record<string, unknown>, host: HostConfig, signal: AbortSignal): Promise<unknown>;
+  };
   chatAccess(claims: EngineScope, messageId: unknown): Promise<void>;
   retrieval(events: any[], host: HostConfig, scope: RetrievalScope): Promise<void>;
   fix(worker: Worker, claims: EngineScope, sourceId: string, method: string, host: HostConfig, signal: AbortSignal, retryOf?: string): Promise<{ available: boolean; [key: string]: unknown }>;

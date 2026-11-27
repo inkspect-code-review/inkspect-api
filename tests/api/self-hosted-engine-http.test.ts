@@ -36,7 +36,7 @@ test('self-hosted signed gateway admits one review and scopes retrieval without 
   }));
   try {
     await pool.query(`CREATE SCHEMA "${schema}"`);
-    for (const name of ['001_repository_api.sql', '004_rust_engine.sql']) await pool.query(await readFile(new URL(import.meta.resolve(`@inkspect/api/migrations/${name}`)), 'utf8'));
+    for (const name of ['001_repository_api.sql', '002_pull_request_workflows.sql', '004_rust_engine.sql', '013_diagram_direction.sql']) await pool.query(await readFile(new URL(import.meta.resolve(`@inkspect/api/migrations/${name}`)), 'utf8'));
     await pool.query(`CREATE TABLE "user"(id text PRIMARY KEY); CREATE TABLE organization(id text PRIMARY KEY);
       CREATE TABLE member("organizationId" text,"userId" text,role text);
       CREATE TABLE "githubConnection"(id text,"organizationId" text,"installationId" text,repositories jsonb);
