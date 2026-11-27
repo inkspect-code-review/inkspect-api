@@ -29,6 +29,14 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
       const claims = verifyRequest(req.method || '', req.url || '', raw, String(req.headers['x-inkspect-claims'] || ''), String(req.headers['x-inkspect-signature'] || ''), process.env.INKSPECT_ENGINE_SECRET || '');
       const body = raw ? JSON.parse(raw) : {};
       const signal = AbortSignal.timeout(85_000);
+      if (req.method === 'POST' && (url.pathname === '/chat/context' || url.pathname === '/chat/source') && policy.additionalChat?.accepts(claims)) {
+        const reader = policy.additionalChat;
+        return await track(async () => {
+          const mode = url.pathname === '/chat/context' ? 'context' : 'source';
+          if (mode === 'context') await policy.chatAccess(claims, body.message_id);
+          return json(await reader.read(claims, mode, body, host, signal));
+        });
+      }
       const storedOperation = (req.method === 'GET' && (url.pathname === '/github/repositories' || url.pathname === '/jobs' || url.pathname.startsWith('/jobs/'))
         && !url.searchParams.has('check_pull'))
         || (req.method === 'POST' && (['/chat/context', '/chat/source'].includes(url.pathname) || /^\/jobs\/J-[a-f0-9]{32}\/cancel$/.test(url.pathname)));
