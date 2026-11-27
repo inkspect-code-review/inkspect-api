@@ -11,7 +11,7 @@ import { watchIndexProgress, type IndexProgress } from "./engine-index-progress"
 
 // Run-specific private journals are retained for crash reconciliation. Neither
 // credentials nor repository contents are copied into application logs.
-export async function runRust(mode: 'review' | 'index' | 'index-stats' | 'context' | 'source' | 'describe' | 'fix' | 'verify-fix', host: HostConfig,
+export async function runRust(mode: 'review' | 'index' | 'index-slice' | 'index-stats' | 'context' | 'source' | 'describe' | 'fix' | 'verify-fix', host: HostConfig,
   job: Record<string, unknown>, request: object, token: string, operation: string, signal: AbortSignal, credential?: ProviderCredential,
   onIndexProgress?: (progress: IndexProgress) => Promise<void>, transport?: { endpoint: string; bearerToken: string }) {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(operation)) throw new Error('Invalid operation');

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { diagramDirection } from "./review-settings";
 import { database } from "./database";
 import { authorizedWorker, authorizedStoredWorker, loadJob, legacyJobs, present, presentLegacy, type EngineJob } from "./engine-store";
 import { verifyRequest, validateReview, jobID, schemaName, type HostConfig } from "./engine-contract";
@@ -109,9 +110,10 @@ export function createEngineHandler(host: HostConfig, ready: () => object | null
         try {
           await tx.query('BEGIN');
           await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`engine-admit:${identity}`]);
+          const jobHost = { ...(body.byok ? host : reviewHost), diagram_direction: await diagramDirection(claims.tenant, tx) };
           await tx.query(`INSERT INTO api_engine_job(id,request_id,organization_id,repository_id,connection_id,installation_id,subject,request,snapshot,host_config)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(request_id) DO NOTHING`,
-          [id, identity, claims.tenant, worker.repository_id, claims.connection, claims.installation, claims.subject, body, snapshot, body.byok ? host : reviewHost]);
+          [id, identity, claims.tenant, worker.repository_id, claims.connection, claims.installation, claims.subject, body, snapshot, jobHost]);
           await policy.attach(admission, id, tx);
           await tx.query('COMMIT');
         } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }

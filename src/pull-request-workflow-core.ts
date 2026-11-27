@@ -40,10 +40,12 @@ const fitsNotes = (notes: ReviewNote[], note: ReviewNote) =>
 
 const commonServices = { engineRequest, admitIndex, eligibility, enqueueIndex, lastIndexed, latestIndex };
 export type WorkflowServices = typeof commonServices & { reviewLifecycle: ReviewLifecycle; pausedLabel: string; admissionHelp: string;
+  handlesAutomaticReview?: (repositoryId: string) => Promise<boolean>;
   prepareReviewIndex?: (row: Workflow, worker: Binding, save: () => Promise<void>) => Promise<string>;
   matchingReview?: (row: Workflow, head: string, base: string, baseRef: string, rerequest: boolean) => Promise<string | undefined>;
   admissionBlock?: (error: unknown) => CheckNotice | undefined;
   waitingBlock?: (row: Workflow, job: ReviewJob) => Promise<CheckNotice | undefined>;
+  runningNotice?: (job: ReviewJob) => CheckNotice | undefined;
 };
 export const workflowServices = (reviewLifecycle: ReviewLifecycle, pausedLabel = 'Review paused', admissionHelp = 'Check repository access, model availability and instance provider configuration in Inkspect.'): WorkflowServices => ({ ...commonServices, reviewLifecycle, pausedLabel, admissionHelp });
 export async function advancePull(row: Workflow, worker: Binding, github: PullGitHub,
@@ -86,7 +88,8 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
   const stopCheck = async () => {
     if (s.check && (!s.check.phase || ['queued', 'paused', 'in_progress'].includes(s.check.phase))) await syncCheck(s.check, 'cancelled', guardBinding);
   };
-  if (isIgnoredAuthor(current.author, worker.ignored_authors)) {
+  if (isIgnoredAuthor(current.author, worker.ignored_authors) ||
+      (current.open && !current.draft && await services.handlesAutomaticReview?.(row.repository_id))) {
     await stopCheck();
     s.stopped = true; await save();
     for (const message of messages) {
@@ -396,6 +399,14 @@ export async function advancePull(row: Workflow, worker: Binding, github: PullGi
     }
   }
   await reviewCheck(job.job.status === 'queued' || job.job.status === 'paused' ? job.job.status : 'in_progress');
+  if (services.runningNotice && job.job.status === 'running' && job.job.id === s.job && job.snapshot?.repository_id === row.repository_id &&
+      job.snapshot.head === current.head && job.snapshot.base_tip === current.base) {
+    const notice = services.runningNotice(job);
+    if (notice) {
+      await publish(`## Inkspect · ${notice.title}\n\n${notice.summary}`);
+      return 10_000;
+    }
+  }
   await publish(`## Inkspect · ${job.job.status === 'paused' ? services.pausedLabel : job.job.status === 'queued' ? 'Review queued' : 'Review in progress'}\n\nCommit \`${s.head}\`.\n\nThe final report will replace this message.`);
   return 10_000;
 }
@@ -424,7 +435,7 @@ export async function processMergeRefresh(signal: AbortSignal, services: Workflo
       let delay: number | null = null;
       try {
         const worker = await bindingFor(tx, row as Workflow);
-        if (worker && await checks.storedIndex(worker)) {
+        if (worker && !await services.handlesAutomaticReview?.(row.repository_id) && await checks.storedIndex(worker)) {
           const check = services.eligibility(worker);
           const latest = await services.latestIndex(worker);
           if (latest && ['running','queued'].includes(latest.status)) delay = 60;

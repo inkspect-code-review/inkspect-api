@@ -7,7 +7,10 @@ test('automatic review settings require workspace membership, owner/admin, same 
   const auth = { options: { baseURL: 'http://localhost:3002' }, api: { getSession: async () => signedIn ? { user: { id: 'user' }, session: { activeOrganizationId: 'org' } } : null }, $context: Promise.resolve({ adapter: { findOne: async () => role ? { role } : null } }) } as unknown as Auth;
   let authors: string[] = [];
   let threshold: CheckThreshold = 'P0';
-  const services = { checkThreshold: async () => threshold, saveCheckThreshold: async (org: string, user: string, value: CheckThreshold) => {
+  let direction: 'TD' | 'LR' = 'TD';
+  const services = { diagramDirection: async () => direction, saveDiagramDirection: async (org: string, user: string, value: 'TD' | 'LR') => {
+    assert.equal(org, 'org'); assert.equal(user, 'user'); direction = value;
+  }, checkThreshold: async () => threshold, saveCheckThreshold: async (org: string, user: string, value: CheckThreshold) => {
     assert.equal(org, 'org'); assert.equal(user, 'user'); threshold = value;
   }, ignoredAuthors: async () => authors, saveIgnoredAuthors: async (org:string,user:string,value:string[]) => { assert.equal(org,'org'); assert.equal(user,'user'); authors=value; }, automaticFix: async () => ({auto_fix:autoFix}), saveAutomaticFix: async (_org:string,_user:string,value:boolean) => { autoFix=value; }, automaticReviews: async () => enabled, saveAutomaticReviews: async (org: string, user: string, value: boolean) => { assert.equal(org, 'org'); assert.equal(user, 'user'); saves++; enabled = value; } };
   const request = (method = 'GET', value: unknown = false, origin = 'http://localhost:3002', org = 'org') => new Request(`http://localhost:3002/api/review-settings?organizationId=${org}`, { method, headers: { origin, 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify({ automatic: value }) } : {}) });
@@ -53,6 +56,16 @@ test('automatic review settings require workspace membership, owner/admin, same 
     const res = await reviewSettings(listRequest({check_threshold:value}),auth,services);
     assert.equal(res.status,200);
     assert.equal((await res.json()).check_threshold,value);
+  }
+  assert.equal((await (await reviewSettings(request(), auth, services)).json()).diagram_direction, 'TD');
+  role = 'member';
+  assert.equal((await reviewSettings(listRequest({diagram_direction:'LR'}), auth, services)).status, 403);
+  role = 'admin';
+  assert.equal((await reviewSettings(listRequest({diagram_direction:'BT'}), auth, services)).status, 400);
+  for (const value of ['LR', 'TD']) {
+    const res = await reviewSettings(listRequest({diagram_direction:value}), auth, services);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).diagram_direction, value);
   }
   signedIn = false; assert.equal((await reviewSettings(request(), auth, services)).status, 401);
 });

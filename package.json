@@ -129,6 +129,7 @@
     "./migrations/010_github_check_reconciliation.sql": "./migrations/010_github_check_reconciliation.sql",
     "./migrations/009_check_threshold.sql": "./migrations/009_check_threshold.sql",
     "./migrations/011_repository_index_limit.sql": "./migrations/011_repository_index_limit.sql",
+    "./migrations/013_diagram_direction.sql": "./migrations/013_diagram_direction.sql",
     "./migrations/012_merge_index_refresh.sql": "./migrations/012_merge_index_refresh.sql",
     "./migrations/self-hosted/000_chat_messages.sql": "./migrations/self-hosted/000_chat_messages.sql",
     "./migrations/self-hosted/001_membership.sql": "./migrations/self-hosted/001_membership.sql",
