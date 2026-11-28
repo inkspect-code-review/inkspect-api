@@ -28,7 +28,7 @@ fs.writeFileSync(out,JSON.stringify({endpoint:process.env.AWS_ENDPOINT_URL_BEDRO
  } finally {for(const name of names)if(before[name]===undefined)delete process.env[name];else process.env[name]=before[name];await rm(dir,{recursive:true,force:true});}
 });
 
-test('a host-provided loopback transport isolates credentials and is never applied to customer-key execution', async () => {
+test('a host-provided loopback transport isolates credentials and requires explicit retrieval scope alongside a customer key', async () => {
  const dir=await mkdtemp(join(tmpdir(),'local-model-transport-'));
  const names=['INKSPECT_AI_PROVIDER','INKSPECT_RUST_STATE','INKSPECT_RUST_BINARY','AWS_BEARER_TOKEN_BEDROCK','AWS_SECRET_ACCESS_KEY'];
  const before=Object.fromEntries(names.map(name=>[name,process.env[name]]));
@@ -48,6 +48,9 @@ localToken:process.env.AWS_BEARER_TOKEN_BEDROCK==='local-transport-token',awsSec
   const byok=await runRust('review',host,{}, {},'test','byok',new AbortController().signal,
    {provider:'openai',model:'example-model',api_key:'synthetic-customer-key',max_output_tokens:10},undefined,transport);
   assert.deepEqual(byok.report,{localToken:false,awsSecret:true});
+  const retrieval=await runRust('review',host,{}, {},'test','byok-retrieval',new AbortController().signal,
+   {provider:'openai',model:'example-model',api_key:'synthetic-customer-key',max_output_tokens:10},undefined,{...transport,retrievalOnly:true});
+  assert.deepEqual(retrieval.report,{endpoint:transport.endpoint,localToken:true,awsSecret:false});
   await assert.rejects(runRust('review',host,{}, {},'test','invalid',new AbortController().signal,undefined,undefined,
    {...transport,endpoint:'https://untrusted.example'}),/Invalid local model transport/);
  } finally {for(const name of names)if(before[name]===undefined)delete process.env[name];else process.env[name]=before[name];await rm(dir,{recursive:true,force:true});}

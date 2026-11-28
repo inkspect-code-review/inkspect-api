@@ -13,7 +13,7 @@ import { watchIndexProgress, type IndexProgress } from "./engine-index-progress"
 // credentials nor repository contents are copied into application logs.
 export async function runRust(mode: 'review' | 'index' | 'index-slice' | 'index-stats' | 'context' | 'source' | 'describe' | 'fix' | 'verify-fix', host: HostConfig,
   job: Record<string, unknown>, request: object, token: string, operation: string, signal: AbortSignal, credential?: ProviderCredential,
-  onIndexProgress?: (progress: IndexProgress) => Promise<void>, transport?: { endpoint: string; bearerToken: string }) {
+  onIndexProgress?: (progress: IndexProgress) => Promise<void>, transport?: { endpoint: string; bearerToken: string; retrievalOnly?: boolean }) {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(operation)) throw new Error('Invalid operation');
   const directory = resolve(process.env.INKSPECT_RUST_STATE || '/var/lib/inkspect/rust', operation);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -35,7 +35,7 @@ export async function runRust(mode: 'review' | 'index' | 'index-slice' | 'index-
     Object.assign(env,engineModelEnvironment());
   }
   // App credentials and database secrets never reach the review subprocess.
-  if (transport && !credential) {
+  if (transport && (!credential || transport.retrievalOnly)) {
     const endpoint = new URL(transport.endpoint);
     if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
       throw new Error('Invalid local model transport');

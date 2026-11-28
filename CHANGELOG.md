@@ -6,6 +6,8 @@ as appropriate. The package's `0.1.0` version is not a claim of a tagged release
 
 ## Unreleased
 
+- 2026-11-28 — Allow a local retrieval transport alongside customer-provided model credentials.
+
 - 2026-11-27 — Let review workers update the existing pull request summary with the current stage of a running review.
 
 - 2026-11-27 — Save the workspace diagram direction with new pull request reviews. Existing workspaces default to top-to-bottom diagrams.
