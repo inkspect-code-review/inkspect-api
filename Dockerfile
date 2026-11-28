@@ -1,11 +1,11 @@
-FROM node:22-bookworm-slim AS build
+FROM node:25-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY vendor ./vendor
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
-FROM node:22-bookworm-slim
+FROM node:25-bookworm-slim
 RUN apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production API_HOST=0.0.0.0 PORT=3003
